@@ -40,7 +40,7 @@ python3 -m http.server 8000
 
 ## Publish
 
-`.github/workflows/pages.yml` deploys `site/` to GitHub Pages on every push to `main`. Enable it once under **Settings → Pages → Source: GitHub Actions**.
+`.github/workflows/pages.yml` deploys `site/` to GitHub Pages on every push to `main` (and to the current default branch). Enable it once under **Settings → Pages → Source: GitHub Actions**.
 
 ## Layout
 
