@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Product & Board Config — Soong Build Academy</title>
+  <meta name="description" content="How a device tree defines an Android product: AndroidProducts.mk, product makefiles and inheritance, BoardConfig.mk, release configurations, aconfig flags and Soong config variables for an automotive head unit.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="product">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 05</span></nav>
+          <div class="eyebrow">Module 05 · Soong in depth</div>
+          <h1>Product &amp; Board Configuration</h1>
+          <p class="lead"><code>Android.bp</code> says <em>how</em> to build a module; the product configuration says <em>what</em> goes into this device's images and <em>how the hardware looks</em>. It is still written in Make, evaluated by Kati and handed to Soong as JSON.</p>
+          <div class="page-meta"><span>⏱ 30 min read</span><span>🎯 Intermediate</span><span>📂 device/&lt;company&gt;/&lt;device&gt;</span></div>
+        </header>
+
+        <section class="doc-section" id="device-tree" data-title="Device tree layout">
+          <div class="sec-head"><h2><span class="sec-num">5.1</span>Device tree layout</h2></div>
+          <p>All product configuration for one board lives in a <strong>device tree</strong> (unrelated to the kernel's DTB). This handbook's example company is <em>Acme</em> and the board is <em>hu</em>:</p>
+          <div class="tree glass"><span class="d">device/acme/hu/</span>
+├── AndroidProducts.mk          <span class="c"># which products exist (→ lunch choices)</span>
+├── acme_hu.mk                  <span class="c"># the product: name, brand, inherited products</span>
+├── device.mk                   <span class="c"># packages, copy files, properties for this device</span>
+├── BoardConfig.mk              <span class="c"># arch, partitions, kernel, AVB, sepolicy dirs</span>
+├── Android.bp                  <span class="c"># soong_namespace + device-local modules</span>
+├── <span class="d">init/</span>                       <span class="c"># init.hu.rc, fstab.hu, ueventd.hu.rc</span>
+├── <span class="d">sepolicy/vendor/</span>            <span class="c"># device SELinux policy</span>
+├── <span class="d">overlays/</span>                   <span class="c"># RROs: CarService, SystemUI, framework config</span>
+├── <span class="d">audio/  display/  vhal/</span>     <span class="c"># config files for HALs</span>
+├── manifest.xml                <span class="c"># VINTF: HALs served by /vendor</span>
+└── compatibility_matrix.xml    <span class="c"># VINTF: what vendor needs from system</span>
+<span class="d">device/acme/hu-kernel/</span>          <span class="c"># prebuilt GKI + vendor modules + DTB (Module 09)</span>
+<span class="d">vendor/acme/</span>                    <span class="c"># HAL sources, prebuilt blobs, shared vendor code</span></div>
+        </section>
+
+        <section class="doc-section" id="androidproducts" data-title="AndroidProducts.mk & lunch choices">
+          <div class="sec-head"><h2><span class="sec-num">5.2</span><code>AndroidProducts.mk</code> &amp; lunch choices</h2></div>
+          <p>The build scans <code>device/*/*/AndroidProducts.mk</code> and <code>vendor/*/*/AndroidProducts.mk</code>. Each lists the product makefiles it provides.</p>
+          <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/AndroidProducts.mk">
+PRODUCT_MAKEFILES := \
+    acme_hu:$(LOCAL_DIR)/acme_hu.mk \
+    acme_hu_rse:$(LOCAL_DIR)/acme_hu_rse.mk    # variant with rear-seat displays
+
+COMMON_LUNCH_CHOICES := \
+    acme_hu-trunk_staging-userdebug \
+    acme_hu-trunk_staging-user
+          </script>
+        </section>
+
+        <section class="doc-section" id="product-mk" data-title="The product makefile">
+          <div class="sec-head"><h2><span class="sec-num">5.3</span>The product makefile</h2></div>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="product" aria-selected="true">acme_hu.mk</button>
+              <button data-tab="device">device.mk</button>
+            </div>
+            <div class="tab-panel" data-panel="product">
+              <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/acme_hu.mk">
+# 64-bit only — saves RAM and build time on a head unit
+$(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit_only.mk)
+
+# Android Automotive: CarService, car apps, automotive features
+$(call inherit-product, packages/services/Car/car_product/build/car.mk)
+
+# everything specific to this board
+$(call inherit-product, device/acme/hu/device.mk)
+
+PRODUCT_NAME         := acme_hu
+PRODUCT_DEVICE       := hu          # selects device/acme/hu/BoardConfig.mk
+PRODUCT_BRAND        := Acme
+PRODUCT_MODEL        := Acme Head Unit
+PRODUCT_MANUFACTURER := Acme
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="device">
+              <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/device.mk">
+PRODUCT_SHIPPING_API_LEVEL := 35
+PRODUCT_USE_DYNAMIC_PARTITIONS := true
+PRODUCT_SOONG_NAMESPACES += device/acme/hu vendor/acme
+
+PRODUCT_PACKAGES += \
+    acme.vehicle.bridge \
+    acme_displayd \
+    AcmeHvac \
+    AcmeCarServiceConfigRRO
+
+PRODUCT_COPY_FILES += \
+    device/acme/hu/init/fstab.hu:$(TARGET_COPY_OUT_VENDOR_RAMDISK)/first_stage_ramdisk/fstab.hu \
+    device/acme/hu/init/fstab.hu:$(TARGET_COPY_OUT_VENDOR)/etc/fstab.hu \
+    device/acme/hu/init/init.hu.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/hw/init.hu.rc \
+    device/acme/hu/init/ueventd.hu.rc:$(TARGET_COPY_OUT_VENDOR)/etc/ueventd.rc \
+    frameworks/native/data/etc/android.hardware.type.automotive.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.type.automotive.xml
+
+PRODUCT_VENDOR_PROPERTIES += \
+    ro.vendor.acme.vm=android \
+    persist.vendor.acme.cluster.port=5000
+
+$(call soong_config_set,acme_hu,vm_transport,vsock)
+$(call soong_config_set,acme_hu,display_layout,triple)
+              </script>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Variable</th><th>Purpose</th></tr></thead>
+              <tbody>
+                <tr><td><code>PRODUCT_PACKAGES</code></td><td>Module names to install (Module 04.9).</td></tr>
+                <tr><td><code>PRODUCT_COPY_FILES</code></td><td><code>src:dest</code> pairs copied verbatim. Prefer <code>prebuilt_etc</code> modules for anything non-trivial.</td></tr>
+                <tr><td><code>PRODUCT_VENDOR_PROPERTIES</code> · <code>PRODUCT_PRODUCT_PROPERTIES</code></td><td>System properties in <code>/vendor/build.prop</code> · <code>/product/etc/build.prop</code>.</td></tr>
+                <tr><td><code>PRODUCT_SOONG_NAMESPACES</code></td><td>Which <code>soong_namespace</code>s are visible to this product (Module 06).</td></tr>
+                <tr><td><code>PRODUCT_SHIPPING_API_LEVEL</code></td><td>The API level the device first shipped with — drives VTS and compatibility requirements.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="inheritance" data-title="Product inheritance">
+          <div class="sec-head"><h2><span class="sec-num">5.4</span>Product inheritance</h2></div>
+          <p><code>inherit-product</code> evaluates another product makefile and <strong>merges</strong> its <code>PRODUCT_*</code> variables into yours: list variables are combined, single values set in your file win. This is how one line pulls in the hundreds of packages that make Android “automotive”.</p>
+          <div class="flow"><span>acme_hu.mk</span><i>⇢</i><span>car.mk</span><i>⇢</i><span>car_generic_system / car_product …</span><i>⇢</i><span>core_64_bit_only.mk</span><i>⇢</i><span>base product makefiles</span></div>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-green">inherit-product</h4><p class="small">Proper product inheritance with merging and de-duplication. Use for <code>*.mk</code> files that define <code>PRODUCT_*</code> variables.</p></div>
+            <div class="glass card"><h4 class="c-amber">include</h4><p class="small">Plain textual inclusion. Use for <code>BoardConfig</code> fragments, never for product files (values silently overwrite each other).</p></div>
+          </div>
+          <script type="text/plain" data-code data-lang="bash" data-file="inspect.sh">
+lunch acme_hu-trunk_staging-userdebug
+get_build_var PRODUCT_PACKAGES | tr ' ' '\n' | sort | grep -i car | head
+m product-graph            # writes out/products.dot — the inheritance graph
+          </script>
+        </section>
+
+        <section class="doc-section" id="boardconfig" data-title="BoardConfig.mk">
+          <div class="sec-head"><h2><span class="sec-num">5.5</span><code>BoardConfig.mk</code></h2></div>
+          <p><code>BoardConfig.mk</code> describes the <em>hardware</em> and how images must be laid out. It is found through <code>PRODUCT_DEVICE</code>. Module 13 shows the complete file for the Android guest VM; the core of it:</p>
+          <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/BoardConfig.mk (core)">
+TARGET_ARCH         := arm64
+TARGET_ARCH_VARIANT := armv8-2a
+TARGET_CPU_ABI      := arm64-v8a
+TARGET_CPU_VARIANT  := generic
+TARGET_BOARD_PLATFORM := acmesoc
+TARGET_NO_BOOTLOADER  := true          # firmware & hypervisor are built outside Android
+
+BOARD_BOOT_HEADER_VERSION := 4
+BOARD_MKBOOTIMG_ARGS      += --header_version $(BOARD_BOOT_HEADER_VERSION)
+
+BOARD_SUPER_PARTITION_SIZE        := 8589934592
+BOARD_SUPER_PARTITION_GROUPS      := acme_dynamic_partitions
+BOARD_ACME_DYNAMIC_PARTITIONS_SIZE := 8585740288
+BOARD_ACME_DYNAMIC_PARTITIONS_PARTITION_LIST := system system_ext product vendor vendor_dlkm odm
+
+BOARD_SEPOLICY_DIRS  += device/acme/hu/sepolicy/vendor
+DEVICE_MANIFEST_FILE += device/acme/hu/manifest.xml
+          </script>
+        </section>
+
+        <section class="doc-section" id="release" data-title="Release configurations">
+          <div class="sec-head"><h2><span class="sec-num">5.6</span>Release configurations</h2></div>
+          <p>The middle part of the lunch target (<code>TARGET_RELEASE</code>) selects a <strong>release configuration</strong>: a set of values for <code>RELEASE_*</code> build flags and runtime <strong>aconfig</strong> feature flags. Release configs are declared as textproto files under <code>build/release/</code>; vendor directories can add their own with a <code>release_config_map.textproto</code>.</p>
+          <p>For your own code, declare aconfig flags to ship unfinished features dark and turn them on per release:</p>
+          <div class="grid grid-2">
+            <div>
+              <script type="text/plain" data-code data-lang="conf" data-file="vendor/acme/flags/flags.aconfig">
+package: "com.acme.hu.flags"
+container: "vendor"
+
+flag {
+  name: "cluster_protocol_v2"
+  namespace: "acme_hu"
+  description: "Use protocol v2 between Android and the cluster VM"
+  bug: "4711"
+}
+              </script>
+            </div>
+            <div>
+              <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/flags/Android.bp">
+aconfig_declarations {
+    name: "acme_hu_flags",
+    package: "com.acme.hu.flags",
+    container: "vendor",
+    srcs: ["flags.aconfig"],
+}
+
+cc_aconfig_library {
+    name: "acme_hu_flags_c_lib",
+    aconfig_declarations: "acme_hu_flags",
+    vendor: true,
+}
+              </script>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="soong-config" data-title="Passing config to Soong">
+          <div class="sec-head"><h2><span class="sec-num">5.7</span>Passing config to Soong</h2></div>
+          <p>Soong cannot read arbitrary Make variables. Values flow one way through <strong>Soong config variables</strong>, grouped in a namespace:</p>
+          <div class="flow"><span>device.mk: soong_config_set</span><i>→</i><span>soong.&lt;product&gt;.variables (VendorVars)</span><i>→</i><span>select() / soong_config_module_type</span></div>
+          <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/device.mk">
+# modern helper
+$(call soong_config_set,acme_hu,vm_transport,vsock)
+
+# the older, equivalent spelling you will see in vendor trees
+SOONG_CONFIG_NAMESPACES += acme_hu
+SOONG_CONFIG_acme_hu += display_layout
+SOONG_CONFIG_acme_hu_display_layout := triple
+          </script>
+          <script type="text/plain" data-code data-lang="bash" data-file="check.sh">
+grep -A4 '"acme_hu"' out/soong/soong.acme_hu.variables
+          </script>
+        </section>
+
+        <section class="doc-section" id="automotive" data-title="Automotive product specifics">
+          <div class="sec-head"><h2><span class="sec-num">5.8</span>Automotive product specifics</h2></div>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-blue">Inherit the car product</h4><p class="small"><code>car.mk</code> (in <code>packages/services/Car/car_product/build/</code>) adds CarService, the car framework, Car UI apps and sets <code>PRODUCT_CHARACTERISTICS := automotive</code>. Split variants exist for products that need a GSI-compatible system image.</p></div>
+            <div class="glass card"><h4 class="c-green">Declare the feature</h4><p class="small">Copy <code>android.hardware.type.automotive.xml</code> to <code>/vendor/etc/permissions</code>; without it the device is not recognised as a car.</p></div>
+            <div class="glass card"><h4 class="c-amber">Replace the reference VHAL</h4><p class="small">The emulator products install the default VHAL. A real head unit ships its own VHAL service that talks to the vehicle network (Module 13).</p></div>
+            <div class="glass card"><h4 class="c-purple">Configure through overlays</h4><p class="small">Occupant zones, audio zones, UX restrictions and displays are configured in CarService's <code>config.xml</code> via an RRO plus XML files in <code>/vendor/etc</code>.</p></div>
+          </div>
+          <div class="callout tip">
+            <div class="ci">💡</div>
+            <div><span class="ct">Tip</span>
+              <p>Read <code>device/generic/car</code> and <code>device/google/trout</code> side by side with your device tree. The first shows a complete car product for the emulator; the second shows one running as a hypervisor guest — exactly the head-unit case.</p>
+            </div>
+          </div>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>

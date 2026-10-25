@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Setup & First Build — Soong Build Academy</title>
+  <meta name="description" content="Prepare a build workstation, install repo, sync AOSP with local manifests, use envsetup.sh and lunch, and run your first Soong build.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="setup">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 02</span></nav>
+          <div class="eyebrow">Module 02 · Foundations</div>
+          <h1>Host Setup, Source Sync &amp; First Build</h1>
+          <p class="lead">A reliable workstation and a reproducible checkout save more time than any build trick. This module takes you from a fresh Ubuntu machine to a booting Android Automotive emulator build.</p>
+          <div class="page-meta"><span>⏱ 25 min read · several hours of syncing</span><span>🎯 Beginner</span><span>🐧 Ubuntu 22.04 / 24.04 LTS</span></div>
+        </header>
+
+        <section class="doc-section" id="requirements" data-title="Workstation requirements">
+          <div class="sec-head"><h2><span class="sec-num">2.1</span>Workstation requirements</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Resource</th><th>Minimum</th><th>Comfortable for a head-unit team</th><th>Why</th></tr></thead>
+              <tbody>
+                <tr><td>CPU</td><td>8 cores</td><td>32–64 cores</td><td>Compile and link steps scale almost linearly; a full AAOS build is ~150k actions.</td></tr>
+                <tr><td>RAM</td><td>32 GB + swap</td><td>64–128 GB</td><td>Soong's graph plus parallel Clang, R8 and Metalava jobs. Out-of-memory kills look like random failures.</td></tr>
+                <tr><td>Disk</td><td>~400 GB free</td><td>2 TB NVMe</td><td>Source ~150–250 GB, <code>out/</code> 250 GB+ per product, plus QNX SDP, Yocto <code>tmp/</code> and ccache.</td></tr>
+                <tr><td>OS</td><td colspan="2">64-bit Ubuntu LTS, case-sensitive file system</td><td>The build uses prebuilt host toolchains; other distros work but are not what Google tests.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Note</span>
+              <p>The head-unit workspace in this handbook holds <strong>four</strong> source trees (Android, QNX host/cluster, Yocto, firmware). Budget disk for all of them — see Module 10 for the layout.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="host-packages" data-title="Host packages">
+          <div class="sec-head"><h2><span class="sec-num">2.2</span>Host packages</h2></div>
+          <p>Android ships its own compilers, JDK, Python and Go, so the host only needs a few basics:</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="install-host-deps.sh">
+sudo apt-get update
+sudo apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev \
+    libc6-dev-i386 x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev \
+    libxml2-utils xsltproc unzip fontconfig python3 rsync
+
+git config --global user.name  "Your Name"
+git config --global user.email "you@example.com"
+git config --global color.ui auto
+          </script>
+          <div class="callout tip">
+            <div class="ci">💡</div>
+            <div><span class="ct">Tip</span>
+              <p>Raise the open-file limit (<code>ulimit -n 65536</code>) and make sure <code>/tmp</code> has a few GB free; soong_ui checks both and fails early with a clear message if they are too low.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="repo" data-title="The repo tool & manifests">
+          <div class="sec-head"><h2><span class="sec-num">2.3</span>The <code>repo</code> tool &amp; manifests</h2></div>
+          <p>AOSP is ~1,000 git repositories. <strong>repo</strong> checks them out according to an XML <strong>manifest</strong>. Your company will add its own repositories (device tree, vendor HALs, BSP blobs) with <strong>local manifests</strong> rather than forking Google's.</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="install-repo.sh">
+mkdir -p ~/bin && export PATH=~/bin:$PATH
+curl -o ~/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
+chmod a+x ~/bin/repo
+repo version
+          </script>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="default" aria-selected="true">default.xml (excerpt)</button>
+              <button data-tab="local">local_manifests/acme.xml</button>
+            </div>
+            <div class="tab-panel" data-panel="default">
+              <script type="text/plain" data-code data-lang="xml" data-file=".repo/manifests/default.xml">
+<manifest>
+  <remote name="aosp" fetch=".." review="https://android-review.googlesource.com/" />
+  <default revision="refs/heads/android-latest-release" remote="aosp" sync-j="4" />
+
+  <project path="build/make" name="platform/build" groups="pdk">
+    <copyfile src="core/root.mk" dest="Makefile" />
+    <linkfile src="envsetup.sh" dest="build/envsetup.sh" />
+  </project>
+  <project path="build/soong" name="platform/build/soong" groups="pdk,tradefed">
+    <linkfile src="root.bp" dest="Android.bp" />
+  </project>
+  <project path="packages/services/Car" name="platform/packages/services/Car" groups="pdk-cw-fs,pdk-fs" />
+  <!-- …about a thousand more projects… -->
+</manifest>
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="local">
+              <script type="text/plain" data-code data-lang="xml" data-file=".repo/local_manifests/acme.xml">
+<manifest>
+  <!-- your company's git server -->
+  <remote name="acme" fetch="ssh://git.acme.example/" />
+
+  <!-- device tree, vendor HALs and prebuilt BSP blobs for the head unit -->
+  <project path="device/acme/hu"            name="android/device/acme/hu"       remote="acme" revision="main" />
+  <project path="vendor/acme/hals"          name="android/vendor/acme/hals"     remote="acme" revision="main" />
+  <project path="vendor/acme/prebuilts"     name="android/vendor/acme/prebuilts" remote="acme" revision="main" />
+
+  <!-- replace an AOSP project with your patched fork -->
+  <remove-project name="platform/packages/apps/Car/Launcher" />
+  <project path="packages/apps/Car/Launcher" name="android/CarLauncher" remote="acme" revision="acme-main" />
+</manifest>
+              </script>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="sync" data-title="Syncing the source">
+          <div class="sec-head"><h2><span class="sec-num">2.4</span>Syncing the source</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="sync.sh">
+mkdir -p ~/hu/android && cd ~/hu/android
+
+# AOSP publishes source releases on this branch
+repo init -u https://android.googlesource.com/platform/manifest \
+          -b android-latest-release \
+          --partial-clone --clone-filter=blob:limit=10M
+
+# add company projects, then sync everything
+mkdir -p .repo/local_manifests && cp ~/acme.xml .repo/local_manifests/
+repo sync -c -j8 --no-tags --optimized-fetch
+
+# freeze exactly what you built — commit this file with every release
+repo manifest -r -o ~/hu/manifests/android-$(date +%Y%m%d).xml
+          </script>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+              <tbody>
+                <tr><td><code>-c</code></td><td>Fetch only the current branch of each project.</td></tr>
+                <tr><td><code>--no-tags</code></td><td>Skip tags — much less data.</td></tr>
+                <tr><td><code>--partial-clone</code></td><td>Fetch large file contents lazily.</td></tr>
+                <tr><td><code>-g &lt;groups&gt;</code></td><td>Sync only projects in these manifest groups (e.g. drop <code>darwin</code>).</td></tr>
+                <tr><td><code>--reference=/mirror</code></td><td>Borrow objects from a local mirror (<code>repo init --mirror</code>) shared by the team or CI.</td></tr>
+                <tr><td><code>repo manifest -r</code></td><td>Write a manifest pinned to exact commit SHAs — your reproducibility record.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="envsetup" data-title="envsetup.sh helpers">
+          <div class="sec-head"><h2><span class="sec-num">2.5</span><code>envsetup.sh</code> helpers</h2></div>
+          <p>Every shell that builds must first <code>source build/envsetup.sh</code>. Besides <code>lunch</code> and <code>m</code>, it defines navigation and search helpers that are much faster than a raw <code>grep -r</code> over the tree.</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+              <tbody>
+                <tr><td><code>hmm</code></td><td>List all helper functions.</td></tr>
+                <tr><td><code>croot</code></td><td><code>cd</code> to the top of the tree.</td></tr>
+                <tr><td><code>gomod &lt;module&gt;</code></td><td><code>cd</code> to the directory that defines a module.</td></tr>
+                <tr><td><code>pathmod</code> / <code>outmod</code></td><td>Print a module's source directory / its installed output files.</td></tr>
+                <tr><td><code>allmod</code> · <code>refreshmod</code></td><td>List all modules · rebuild the module index after edits.</td></tr>
+                <tr><td><code>cgrep</code> · <code>jgrep</code> · <code>mgrep</code> · <code>sepgrep</code></td><td>Grep C/C++ · Java · makefiles &amp; <code>Android.bp</code> · SEPolicy files.</td></tr>
+                <tr><td><code>printconfig</code></td><td>Show the selected product, release, variant and output paths.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="lunch" data-title="Choosing a target with lunch">
+          <div class="sec-head"><h2><span class="sec-num">2.6</span>Choosing a target with <code>lunch</code></h2></div>
+          <p>A build target has three parts: <strong>product</strong> (what goes in the image), <strong>release</strong> (which feature-flag values apply) and <strong>variant</strong> (how debuggable it is).</p>
+          <div class="flow"><span>aosp_cf_x86_64_auto</span><i>-</i><span>trunk_staging</span><i>-</i><span>userdebug</span></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="lunch.sh">
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug   # AAOS on Cuttlefish (x86_64)
+printconfig
+echo $TARGET_PRODUCT $TARGET_RELEASE $TARGET_BUILD_VARIANT $ANDROID_PRODUCT_OUT
+          </script>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Variant</th><th>Use</th><th>Properties</th></tr></thead>
+              <tbody>
+                <tr><td><code>user</code></td><td>Production</td><td>No root, <code>ro.debuggable=0</code>, adb off by default, full optimization.</td></tr>
+                <tr><td><code>userdebug</code></td><td>Daily development &amp; validation</td><td>Like user but with <code>adb root</code>, debugging tools and permissive debugging options. <strong>The default choice.</strong></td></tr>
+                <tr><td><code>eng</code></td><td>Early bring-up</td><td>Extra tools, fewer optimizations (e.g. no dex pre-optimization), slower at runtime.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Note</span>
+              <p>Since Android 15 the release part is mandatory. <code>trunk_staging</code> enables in-development features; a shipped branch also has its own release (run <code>list_releases</code> after lunch). Products for your head unit are added by your own <code>AndroidProducts.mk</code> — Module 05.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="build-commands" data-title="m, mm, mmm and friends">
+          <div class="sec-head"><h2><span class="sec-num">2.7</span><code>m</code>, <code>mm</code>, <code>mmm</code> and friends</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Command</th><th>Builds</th></tr></thead>
+              <tbody>
+                <tr><td><code>m</code></td><td>Default goal <code>droid</code>: every module in the product and all images.</td></tr>
+                <tr><td><code>m &lt;module&gt; [&lt;module&gt;…]</code></td><td>Named modules plus their dependencies.</td></tr>
+                <tr><td><code>mm</code> · <code>mmm &lt;dir&gt;</code></td><td>Modules defined in the current directory · in <code>&lt;dir&gt;</code>.</td></tr>
+                <tr><td><code>m nothing</code></td><td>Only runs Soong/Kati — the fastest syntax check after editing build files.</td></tr>
+                <tr><td><code>m systemimage</code> · <code>vendorimage</code> · <code>bootimage</code> · <code>superimage</code></td><td>One image without the rest.</td></tr>
+                <tr><td><code>m dist DIST_DIR=…</code></td><td>Build plus release artifacts: target-files, image zip, symbols.</td></tr>
+                <tr><td><code>m installclean</code></td><td>Remove installed files and images but keep intermediates — use after changing product config.</td></tr>
+                <tr><td><code>m clobber</code></td><td>Delete all of <code>out/</code>.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <h3>Your first build: AAOS on Cuttlefish</h3>
+          <p>Before touching a real head unit, prove your workstation by building and booting the virtual automotive device. It exercises exactly the same Soong flow.</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="first-build.sh">
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+m -j$(nproc)                     # first build: 1–4 h depending on cores
+
+# boot it (needs the cuttlefish host packages, KVM and a user in the kvm group)
+launch_cvd --daemon
+adb shell getprop ro.build.characteristics   # → automotive
+          </script>
+        </section>
+
+        <section class="doc-section" id="container" data-title="Reproducible builds in a container">
+          <div class="sec-head"><h2><span class="sec-num">2.8</span>Reproducible builds in a container</h2></div>
+          <p>A head-unit program lives for years. Pin the host environment in a container image so a build from three years ago can be reproduced. Mount source, <code>out/</code> and ccache from the host so they survive container restarts.</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="docker/Dockerfile">
+FROM ubuntu:22.04
+ARG UID=1000
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y git-core gnupg flex bison build-essential zip curl \
+      zlib1g-dev libc6-dev-i386 x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev \
+      libxml2-utils xsltproc unzip fontconfig python3 rsync ccache locales sudo \
+ && locale-gen en_US.UTF-8 \
+ && curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo \
+ && chmod a+x /usr/local/bin/repo \
+ && useradd -m -u $UID builder
+ENV LANG=en_US.UTF-8 USE_CCACHE=1 CCACHE_EXEC=/usr/bin/ccache CCACHE_DIR=/ccache
+USER builder
+WORKDIR /src
+          </script>
+          <script type="text/plain" data-code data-lang="bash" data-file="docker/run.sh">
+docker build -t hu-android-build --build-arg UID=$(id -u) docker/
+docker run --rm -it \
+  -v ~/hu/android:/src -v /nvme/out:/src/out -v /nvme/ccache:/ccache \
+  hu-android-build bash -c 'source build/envsetup.sh && lunch acme_hu-trunk_staging-userdebug && m dist'
+          </script>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>

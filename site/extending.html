@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Extending Soong — Soong Build Academy</title>
+  <meta name="description" content="Customize Soong for a vendor tree: soong_namespace, soong_config_module_type, Go plugin module types, and migrating Android.mk to Android.bp.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="extending">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 06</span></nav>
+          <div class="eyebrow">Module 06 · Soong in depth</div>
+          <h1>Customizing &amp; Extending Soong</h1>
+          <p class="lead">Sooner or later a vendor tree needs “build this differently on board B” or “two suppliers both ship a <code>libcamera_hal</code>”. Soong has a ladder of mechanisms for that — climb it from the bottom and stop as early as you can.</p>
+          <div class="page-meta"><span>⏱ 25 min read</span><span>🎯 Intermediate → Advanced</span><span>📂 build/soong/android · build/soong/docs</span></div>
+        </header>
+
+        <section class="doc-section" id="when" data-title="Choosing an extension mechanism">
+          <div class="sec-head"><h2><span class="sec-num">6.1</span>Choosing an extension mechanism</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Need</th><th>Use</th><th>Cost</th></tr></thead>
+              <tbody>
+                <tr><td>Same module name in two vendor trees</td><td><code>soong_namespace</code></td><td>Low</td></tr>
+                <tr><td>Different value per product / board</td><td><code>select()</code> on a Soong config variable</td><td>Low</td></tr>
+                <tr><td>Same, for a property that is not configurable yet</td><td><code>soong_config_module_type</code></td><td>Medium</td></tr>
+                <tr><td>Different module set per product</td><td>Different <code>PRODUCT_PACKAGES</code></td><td>Low</td></tr>
+                <tr><td>New kind of build step (a code generator used everywhere)</td><td><code>genrule</code> / <code>genrule_defaults</code></td><td>Low</td></tr>
+                <tr><td>Logic that truly needs code</td><td>Go plugin module type</td><td class="no">High — breaks across releases</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="namespaces" data-title="Soong namespaces">
+          <div class="sec-head"><h2><span class="sec-num">6.2</span>Soong namespaces</h2></div>
+          <p>A <code>soong_namespace</code> module at the top of a directory makes all module names below it private to that namespace. Only namespaces listed in <code>PRODUCT_SOONG_NAMESPACES</code> are built and visible to Make, so two board families can define the same module names side by side.</p>
+          <div class="grid grid-2">
+            <div>
+              <script type="text/plain" data-code data-lang="bp" data-file="device/acme/hu/Android.bp">
+soong_namespace {
+    imports: [
+        "vendor/acme/common",   // may use modules from here by plain name
+    ],
+}
+
+cc_binary {
+    name: "acme_displayd",
+    vendor: true,
+    srcs: ["displayd.cpp"],
+    shared_libs: [
+        "libacme_util",                          // from an import
+        "//vendor/acme/soc_x:libsoc_display",    // fully qualified
+    ],
+}
+              </script>
+            </div>
+            <div>
+              <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/device.mk">
+PRODUCT_SOONG_NAMESPACES += \
+    device/acme/hu \
+    vendor/acme/common \
+    vendor/acme/soc_x
+              </script>
+              <div class="callout note">
+                <div class="ci">ℹ️</div>
+                <div><span class="ct">Note</span>
+                  <p>Modules outside any namespace live in the global (root) namespace and are always visible. Forgetting to add a namespace to <code>PRODUCT_SOONG_NAMESPACES</code> gives “module not found” — even though the <code>Android.bp</code> is right there.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="config-module-type" data-title="soong_config_module_type">
+          <div class="sec-head"><h2><span class="sec-num">6.3</span><code>soong_config_module_type</code></h2></div>
+          <p>Defines a new module type that wraps an existing one and lets selected properties change with Soong config variables. Before <code>select()</code> this was the only supported way to put conditionals in <code>Android.bp</code>.</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/build/Android.bp">
+soong_config_string_variable {
+    name: "display_layout",
+    values: ["single", "dual", "triple"],
+}
+
+soong_config_bool_variable {
+    name: "has_rse",              // rear-seat entertainment
+}
+
+soong_config_module_type {
+    name: "acme_cc_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "acme_hu",
+    variables: ["display_layout"],
+    bool_variables: ["has_rse"],
+    value_variables: ["board_rev"],
+    properties: ["cflags", "srcs"],
+}
+
+acme_cc_defaults {
+    name: "acme_display_defaults",
+    soong_config_variables: {
+        display_layout: {
+            dual:   { cflags: ["-DDISPLAYS=2"] },
+            triple: { cflags: ["-DDISPLAYS=3"] },
+            conditions_default: { cflags: ["-DDISPLAYS=1"] },
+        },
+        has_rse: { srcs: ["rse_output.cpp"] },
+        board_rev: { cflags: ["-DBOARD_REV=%s"] },   // value substituted
+    },
+}
+          </script>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/display/Android.bp">
+soong_config_module_type_import {
+    from: "vendor/acme/build/Android.bp",
+    module_types: ["acme_cc_defaults"],
+}
+
+cc_binary {
+    name: "acme_displayd",
+    defaults: ["acme_display_defaults"],
+    vendor: true,
+    srcs: ["displayd.cpp"],
+}
+          </script>
+        </section>
+
+        <section class="doc-section" id="go-plugin" data-title="Writing a Go module type">
+          <div class="sec-head"><h2><span class="sec-num">6.4</span>Writing a Go module type</h2></div>
+          <p>Soong is Go, and a <code>bootstrap_go_package</code> with <code>pluginFor: ["soong_build"]</code> is compiled into it. A <strong>load hook</strong> can compute properties in code before the module is processed.</p>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="bp" aria-selected="true">Android.bp</button>
+              <button data-tab="go">acme.go</button>
+              <button data-tab="use">Usage</button>
+            </div>
+            <div class="tab-panel" data-panel="bp">
+              <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/soong/Android.bp">
+bootstrap_go_package {
+    name: "soong-acme",
+    pkgPath: "acme/soong",
+    deps: [
+        "blueprint",
+        "blueprint-proptools",
+        "soong",
+        "soong-android",
+        "soong-cc",
+    ],
+    srcs: ["acme.go"],
+    pluginFor: ["soong_build"],
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="go">
+              <script type="text/plain" data-code data-lang="go" data-file="vendor/acme/soong/acme.go">
+package acme
+
+import (
+	"android/soong/android"
+	"android/soong/cc"
+)
+
+func init() {
+	android.RegisterModuleType("acme_hu_cc_defaults", acmeDefaultsFactory)
+}
+
+func acmeDefaultsFactory() android.Module {
+	module := cc.DefaultsFactory()
+	android.AddLoadHook(module, func(ctx android.LoadHookContext) {
+		type props struct {
+			Cflags []string
+		}
+		p := &props{}
+		cfg := ctx.Config().VendorConfig("acme_hu")
+		if cfg.String("vm_transport") == "shmem" {
+			p.Cflags = append(p.Cflags, "-DACME_TRANSPORT_SHMEM")
+		}
+		if cfg.Bool("has_rse") {
+			p.Cflags = append(p.Cflags, "-DACME_HAS_RSE")
+		}
+		ctx.AppendProperties(p)
+	})
+	return module
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="use">
+              <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/display/Android.bp">
+acme_hu_cc_defaults {
+    name: "acme_hu_defaults",
+}
+
+cc_binary {
+    name: "acme_displayd",
+    defaults: ["acme_hu_defaults"],
+    srcs: ["displayd.cpp"],
+    vendor: true,
+}
+              </script>
+            </div>
+          </div>
+          <div class="callout warn">
+            <div class="ci">⚠️</div>
+            <div><span class="ct">Warning</span>
+              <p>Soong's Go API is internal and changes every release. Recent AOSP versions also validate plugins against an allowlist; out-of-tree plugins need <code>BUILD_BROKEN_PLUGIN_VALIDATION</code> in <code>BoardConfig.mk</code>. Every plugin is a migration task on each Android upgrade — use one only when <code>select()</code> and config module types truly cannot express the logic.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="android-mk" data-title="Migrating Android.mk">
+          <div class="sec-head"><h2><span class="sec-num">6.5</span>Migrating <code>Android.mk</code></h2></div>
+          <p>Supplier code often arrives as <code>Android.mk</code>. Convert it: Make modules are slower to parse, cannot be used from <code>Android.bp</code> as freely, and are increasingly restricted.</p>
+          <div class="grid grid-2">
+            <div>
+              <script type="text/plain" data-code data-lang="make" data-file="Android.mk (before)">
+LOCAL_PATH := $(call my-dir)
+include $(CLEAR_VARS)
+LOCAL_MODULE := acme_tuner_hal
+LOCAL_MODULE_RELATIVE_PATH := hw
+LOCAL_VENDOR_MODULE := true
+LOCAL_SRC_FILES := tuner.cpp radio.cpp
+LOCAL_SHARED_LIBRARIES := liblog libbase
+LOCAL_CFLAGS := -Wall -Werror
+ifeq ($(TARGET_BOARD_PLATFORM),acmesoc)
+LOCAL_CFLAGS += -DACME_SOC
+endif
+LOCAL_INIT_RC := acme_tuner_hal.rc
+include $(BUILD_EXECUTABLE)
+              </script>
+            </div>
+            <div>
+              <script type="text/plain" data-code data-lang="bp" data-file="Android.bp (after)">
+cc_binary {
+    name: "acme_tuner_hal",
+    relative_install_path: "hw",
+    vendor: true,
+    srcs: ["tuner.cpp", "radio.cpp"],
+    shared_libs: ["liblog", "libbase"],
+    cflags: ["-Wall", "-Werror"] + select(
+        soong_config_variable("acme_hu", "soc"), {
+            "acmesoc": ["-DACME_SOC"],
+            default: [],
+        }),
+    init_rc: ["acme_tuner_hal.rc"],
+}
+              </script>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th><code>Android.mk</code></th><th><code>Android.bp</code></th></tr></thead>
+              <tbody>
+                <tr><td><code>include $(BUILD_EXECUTABLE)</code> · <code>BUILD_SHARED_LIBRARY</code> · <code>BUILD_STATIC_LIBRARY</code></td><td><code>cc_binary</code> · <code>cc_library_shared</code> · <code>cc_library_static</code></td></tr>
+                <tr><td><code>BUILD_PACKAGE</code> · <code>BUILD_JAVA_LIBRARY</code> · <code>BUILD_PREBUILT</code></td><td><code>android_app</code> · <code>java_library</code> · <code>prebuilt_etc</code> &amp; friends</td></tr>
+                <tr><td><code>LOCAL_VENDOR_MODULE</code> / <code>LOCAL_PROPRIETARY_MODULE</code></td><td><code>vendor: true</code></td></tr>
+                <tr><td><code>LOCAL_C_INCLUDES</code></td><td><code>local_include_dirs</code> / <code>include_dirs</code> (better: <code>header_libs</code>)</td></tr>
+                <tr><td><code>LOCAL_MODULE_TAGS := optional</code></td><td>Drop it — install is controlled by <code>PRODUCT_PACKAGES</code>.</td></tr>
+                <tr><td><code>ifeq</code> on a Make variable</td><td><code>select()</code> on a Soong config variable set in the product.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="bestpractices" data-title="Best practices">
+          <div class="sec-head"><h2><span class="sec-num">6.6</span>Best practices</h2></div>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-green">One namespace per supplier</h4><p class="small">SoC vendor, Tier-1 and OEM code each in their own namespace with explicit <code>imports</code>. Name clashes become impossible and dependencies become visible.</p></div>
+            <div class="glass card"><h4 class="c-blue">Config in the product, not the code</h4><p class="small">Every board difference is a Soong config variable set in <code>device.mk</code>. Never test <code>TARGET_PRODUCT</code> names inside modules.</p></div>
+            <div class="glass card"><h4 class="c-amber">Keep AOSP pristine</h4><p class="small">Change AOSP behaviour through overlays, config and your own modules. Each AOSP patch costs you on every upgrade; track the ones you must keep.</p></div>
+            <div class="glass card"><h4 class="c-purple">Validate early</h4><p class="small">Run <code>m nothing</code> and <code>bpfmt -d</code> in pre-submit. Most build breaks are caught in a minute instead of after a two-hour build.</p></div>
+          </div>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>

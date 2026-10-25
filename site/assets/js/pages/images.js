@@ -1,0 +1,41 @@
+/* Module 08 — clickable partition map */
+(function () {
+  const { $, picker } = window.SBA;
+  const P = (title, tags, html, code) => ({ title, tags, html, code });
+  picker($("#part-pick"), {
+    boot: P("boot — the GKI kernel", [["boot.img"], ["A/B", "gray"], ["AVB hash", "amber"]],
+      `<p>With header v4 + <code>init_boot</code>, <code>boot</code> contains only the kernel <code>Image</code> (a Google-signed GKI on certified devices). Its size depends on the kernel, typically 32–64 MiB.</p>`,
+      "m bootimage"),
+    init_boot: P("init_boot — generic ramdisk", [["init_boot.img"], ["Android 13+", "gray"]],
+      `<p>The generic first-stage ramdisk: <code>/init</code>, first-stage mount logic and <code>adbd</code> for recovery-less devices. Built from AOSP and identical across devices of the same release.</p>`),
+    vendor_boot: P("vendor_boot — vendor ramdisk, DTB, cmdline", [["vendor_boot.img"], ["vendor", "amber"]],
+      `<p>Holds the vendor ramdisk (first-stage <code>fstab</code>, early kernel modules from <code>BOARD_VENDOR_RAMDISK_KERNEL_MODULES</code>), the DTB, the vendor kernel command line and <strong>bootconfig</strong>. For a VM guest this is where virtio drivers that are needed to mount <code>super</code> must live.</p>`,
+      "m vendorbootimage"),
+    dtbo: P("dtbo — device-tree overlays", [["dtbo.img"], ["optional", "gray"]],
+      `<p>Overlays the bootloader applies on top of the base DTB to describe board variants. Many VM guests skip it because the hypervisor generates the guest's device tree.</p>`),
+    vbmeta: P("vbmeta — the root of Android's chain of trust", [["vbmeta.img"], ["AVB", "amber"]],
+      `<p>Signed table of hash and hashtree descriptors, plus pointers to chained partitions such as <code>vbmeta_system</code>. The guest loader checks its signature against the embedded public key and the rollback index.</p>`,
+      "avbtool info_image --image vbmeta.img"),
+    super: P("super — container for dynamic partitions", [["super.img"], ["LP metadata", "blue"]],
+      `<p>One physical partition holding all logical partitions. Size is fixed by <code>BOARD_SUPER_PARTITION_SIZE</code> and must match the GPT entry exactly. With Virtual A/B there is a single <code>super</code> (no <code>_a/_b</code>).</p>`,
+      "lpdump super.img"),
+    misc: P("misc — bootloader control block", [["raw"], ["tiny", "gray"]],
+      `<p>Carries the bootloader message (boot into recovery/fastbootd, wipe) and often the A/B slot metadata used by the Boot HAL. Must be shared knowledge between the guest bootloader and Android.</p>`),
+    metadata: P("metadata — encryption keys & OTA state", [["ext4/f2fs"], ["16 MiB+", "gray"]],
+      `<p>Mounted at <code>/metadata</code> in first stage. Holds metadata-encryption keys for <code>userdata</code> and Virtual A/B snapshot state during an update.</p>`),
+    userdata: P("userdata — /data", [["f2fs/ext4"], ["not in OTA", "green"]],
+      `<p>Apps, user profiles, logs. Not part of the OTA; formatted on first boot if empty. Size it generously — map and media caches grow fast on a head unit.</p>`),
+    system: P("system — the Android framework", [["erofs/ext4"], ["hashtree", "amber"]],
+      `<p>AOSP framework, system apps and libraries. Ideally untouched by the OEM so it can be updated or replaced by a GSI for testing.</p>`, "m systemimage"),
+    system_ext: P("system_ext — OEM framework extensions", [["system side"]],
+      `<p>OEM code that is tightly coupled to system (e.g. SystemUI customisations, privileged OEM services). Modules use <code>system_ext_specific: true</code>.</p>`),
+    product: P("product — OEM apps & overlays", [["product_specific"], ["/product", "purple"]],
+      `<p>Car apps, branding, RROs and product-line customisation. A different car model can ship a different <code>product</code> on the same <code>system</code>/<code>vendor</code>.</p>`, "m productimage"),
+    vendor: P("vendor — SoC and board HALs", [["vendor: true"], ["Treble", "amber"]],
+      `<p>HAL services (VHAL bridge, audio, graphics, display), vendor daemons, firmware, VINTF manifest and vendor SEPolicy. Built against the stable vendor interface so it survives framework updates.</p>`, "m vendorimage"),
+    vendor_dlkm: P("vendor_dlkm — loadable kernel modules", [["*.ko"], ["GKI", "green"]],
+      `<p>Vendor kernel modules loaded after first stage (<code>BOARD_VENDOR_KERNEL_MODULES</code>). Keeping them out of <code>vendor</code> lets the kernel and modules be updated together.</p>`),
+    odm: P("odm — board-variant customisation", [["device_specific"]],
+      `<p>Optional layer on top of vendor for ODM or hardware variants (e.g. different amplifier or tuner). Many head units leave it nearly empty.</p>`),
+  }, "super");
+})();

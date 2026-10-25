@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Linux SE Guest (Yocto) — Soong Build Academy</title>
+  <meta name="description" content="Build a security-enhanced Linux service VM for the head unit with the Yocto Project: layers, a machine for the hypervisor guest, SELinux, image recipe, build and outputs.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="linux-se">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 14</span></nav>
+          <div class="eyebrow">Module 14 · Head-unit SoC</div>
+          <h1>Linux SE Guest with Yocto</h1>
+          <p class="lead">The Linux SE VM is the head unit's “mail room”: it talks to the cloud, the telematics box and the diagnostic tester, so Android doesn't have to. It is small, read-only and runs with <strong>SELinux enforcing</strong>. It's built with the Yocto Project — a third, completely different build system from Soong.</p>
+          <div class="page-meta"><span>⏱ 25 min read</span><span>🎯 Intermediate → Advanced</span><span>🧰 Yocto · BitBake · meta-selinux</span></div>
+        </header>
+
+        <section class="doc-section" id="role" data-title="What the Linux SE VM does">
+          <div class="sec-head"><h2><span class="sec-num">14.1</span>What the Linux SE VM does</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Service</th><th>Why it lives here and not in Android</th></tr></thead>
+              <tbody>
+                <tr><td>Telematics &amp; cellular link</td><td>Always-on connectivity independent of the Android lifecycle (Android may be suspended or restarting).</td></tr>
+                <tr><td>OTA orchestrator</td><td>Downloads and verifies updates for <em>all</em> VMs and coordinates slot switches (Module 15.7).</td></tr>
+                <tr><td>Firewall / gateway</td><td>Single, hardened entry point between external networks and the in-vehicle network.</td></tr>
+                <tr><td>Diagnostics (DoIP/UDS)</td><td>Workshop tester access with its own authentication.</td></tr>
+                <tr><td>Logging &amp; crash upload</td><td>Collects logs from all VMs even when Android is down.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Naming</span>
+              <p>“Linux SE” here means a security-enhanced (SELinux-enforcing) Linux guest. If your program uses the name for a different service VM, everything below still applies — only the package list changes.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="yocto-setup" data-title="Setting up Yocto">
+          <div class="sec-head"><h2><span class="sec-num">14.2</span>Setting up Yocto</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="yocto-setup.sh">
+sudo apt-get install -y build-essential chrpath cpio debianutils diffstat file gawk gcc git \
+    iputils-ping libacl1 liblz4-tool locales python3 python3-git python3-jinja2 python3-pexpect \
+    python3-pip python3-subunit socat texinfo unzip wget xz-utils zstd
+
+mkdir -p ~/hu/yocto && cd ~/hu/yocto
+git clone -b scarthgap https://git.yoctoproject.org/poky
+git clone -b scarthgap https://git.openembedded.org/meta-openembedded
+git clone -b scarthgap https://git.yoctoproject.org/meta-selinux
+git clone git@git.acme.example:yocto/meta-acme.git
+
+source poky/oe-init-build-env build-linux-se    # creates conf/ and cd's into the build dir
+          </script>
+          <div class="callout tip">
+            <div class="ci">💡</div>
+            <div><span class="ct">Tip</span>
+              <p>Use an LTS release (Scarthgap 5.0 here) for a vehicle program and pin every layer to a commit. Tools such as <code>kas</code> or a repo manifest make the layer set reproducible, exactly like the Android manifest in Module 02.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="layers" data-title="Layers">
+          <div class="sec-head"><h2><span class="sec-num">14.3</span>Layers</h2></div>
+          <p>Yocto is composed of <strong>layers</strong> of recipes. Never edit upstream layers — put every change in your own <code>meta-acme</code> using <code>.bbappend</code> files.</p>
+          <script type="text/plain" data-code data-lang="bitbake" data-file="build-linux-se/conf/bblayers.conf">
+BBLAYERS ?= " \
+  ${TOPDIR}/../poky/meta \
+  ${TOPDIR}/../poky/meta-poky \
+  ${TOPDIR}/../meta-openembedded/meta-oe \
+  ${TOPDIR}/../meta-openembedded/meta-python \
+  ${TOPDIR}/../meta-openembedded/meta-networking \
+  ${TOPDIR}/../meta-selinux \
+  ${TOPDIR}/../meta-acme \
+"
+          </script>
+          <div class="tree glass"><span class="d">meta-acme/</span>
+├── conf/layer.conf
+├── <span class="d">conf/machine/</span>acme-hu-vm.conf                     <span class="c"># 14.4</span>
+├── <span class="d">conf/distro/</span>acme-se.conf                         <span class="c"># 14.5</span>
+├── <span class="d">recipes-kernel/linux/</span>linux-yocto_%.bbappend + files/virtio-guest.cfg
+├── <span class="d">recipes-core/images/</span>acme-linux-se-image.bb         <span class="c"># 14.6</span>
+└── <span class="d">recipes-acme/</span>acme-telematics/  acme-ota-orchestrator/  acme-diag-gateway/</div>
+        </section>
+
+        <section class="doc-section" id="machine" data-title="A machine for the VM">
+          <div class="sec-head"><h2><span class="sec-num">14.4</span>A machine for the VM</h2></div>
+          <p>The “machine” is the virtual hardware from <code>linux.qvmconf</code> (Module 11.5): virtio-mmio devices, a <code>hvc0</code> console, no real peripherals except the passed-through Ethernet MAC.</p>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="machine" aria-selected="true">acme-hu-vm.conf</button>
+              <button data-tab="append">linux-yocto bbappend</button>
+              <button data-tab="cfg">virtio-guest.cfg</button>
+            </div>
+            <div class="tab-panel" data-panel="machine">
+              <script type="text/plain" data-code data-lang="bitbake" data-file="meta-acme/conf/machine/acme-hu-vm.conf">
+#@TYPE: Machine
+#@NAME: Acme HU — Linux SE guest on the QNX Hypervisor
+require conf/machine/include/arm/armv8a/tune-cortexa55.inc
+
+PREFERRED_PROVIDER_virtual/kernel = "linux-yocto"
+PREFERRED_VERSION_linux-yocto = "6.6%"
+KERNEL_IMAGETYPE = "Image"
+
+SERIAL_CONSOLES = "115200;hvc0"
+IMAGE_FSTYPES = "ext4"
+MACHINE_FEATURES = ""
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="append">
+              <script type="text/plain" data-code data-lang="bitbake" data-file="meta-acme/recipes-kernel/linux/linux-yocto_%.bbappend">
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+
+COMPATIBLE_MACHINE:acme-hu-vm = "acme-hu-vm"
+KMACHINE:acme-hu-vm = "qemuarm64"
+SRC_URI:append:acme-hu-vm = " file://virtio-guest.cfg"
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="cfg">
+              <script type="text/plain" data-code data-lang="conf" data-file="meta-acme/recipes-kernel/linux/files/virtio-guest.cfg">
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VSOCKETS=y
+CONFIG_VIRTIO_VSOCKETS=y
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_FS_SECURITY=y
+CONFIG_DM_VERITY=y
+CONFIG_SECURITY_SELINUX=y
+CONFIG_AUDIT=y
+              </script>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="selinux" data-title="Enabling SELinux">
+          <div class="sec-head"><h2><span class="sec-num">14.5</span>Enabling SELinux</h2></div>
+          <p><code>meta-selinux</code> provides the userspace, a reference policy and the kernel configuration. Turn it on in a small distro config so it can never be forgotten in <code>local.conf</code>.</p>
+          <script type="text/plain" data-code data-lang="bitbake" data-file="meta-acme/conf/distro/acme-se.conf">
+require conf/distro/poky.conf
+DISTRO = "acme-se"
+DISTRO_NAME = "Acme HU Linux SE"
+
+DISTRO_FEATURES:append = " acl xattr pam selinux systemd usrmerge"
+DISTRO_FEATURES:remove = "x11 wayland bluetooth wifi"
+INIT_MANAGER = "systemd"
+
+PREFERRED_PROVIDER_virtual/refpolicy = "refpolicy-targeted"
+DEFAULT_ENFORCING = "enforcing"          # ship enforcing; use permissive only on dev builds
+          </script>
+          <script type="text/plain" data-code data-lang="bitbake" data-file="build-linux-se/conf/local.conf (excerpt)">
+MACHINE = "acme-hu-vm"
+DISTRO  = "acme-se"
+DL_DIR     = "/nvme/yocto/downloads"       # share across builds and CI
+SSTATE_DIR = "/nvme/yocto/sstate-cache"
+          </script>
+        </section>
+
+        <section class="doc-section" id="image" data-title="Image recipe">
+          <div class="sec-head"><h2><span class="sec-num">14.6</span>Image recipe</h2></div>
+          <script type="text/plain" data-code data-lang="bitbake" data-file="meta-acme/recipes-core/images/acme-linux-se-image.bb">
+SUMMARY = "Acme HU Linux SE service VM"
+LICENSE = "MIT"
+
+inherit core-image selinux-image          # selinux-image labels the rootfs at build time
+
+IMAGE_FEATURES += "read-only-rootfs"
+IMAGE_FEATURES:remove = "debug-tweaks"
+
+IMAGE_INSTALL:append = " \
+    packagegroup-core-boot \
+    nftables \
+    acme-telematics \
+    acme-ota-orchestrator \
+    acme-diag-gateway \
+"
+
+IMAGE_ROOTFS_SIZE = "524288"              # KiB; must fit the linux_rootfs partition
+          </script>
+        </section>
+
+        <section class="doc-section" id="build-linux" data-title="Building & outputs">
+          <div class="sec-head"><h2><span class="sec-num">14.7</span>Building &amp; outputs</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="yocto/build.sh">
+#!/bin/bash
+set -eo pipefail   # no -u: envsetup.sh / SDK env scripts are not nounset-safe
+cd ~/hu/yocto
+source poky/oe-init-build-env build-linux-se
+bitbake acme-linux-se-image
+
+ls tmp/deploy/images/acme-hu-vm/
+#   Image                                         → kernel loaded by linux.qvmconf
+#   acme-linux-se-image-acme-hu-vm.rootfs.ext4    → linux_rootfs_a/b partition
+#   acme-linux-se-image-acme-hu-vm.rootfs.manifest
+#   *.spdx.json                                   → SBOM for compliance
+          </script>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Command</th><th>Use</th></tr></thead>
+              <tbody>
+                <tr><td><code>bitbake -c menuconfig virtual/kernel</code></td><td>Explore kernel options; save as a <code>.cfg</code> fragment.</td></tr>
+                <tr><td><code>bitbake -e acme-linux-se-image | grep ^IMAGE_INSTALL=</code></td><td>See the final value of any variable.</td></tr>
+                <tr><td><code>bitbake -c cleansstate &lt;recipe&gt;</code></td><td>Force a recipe to rebuild from scratch.</td></tr>
+                <tr><td><code>devtool modify &lt;recipe&gt;</code></td><td>Work on a package's source in place.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>

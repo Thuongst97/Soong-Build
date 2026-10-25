@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Integration & Flashing — Soong Build Academy</title>
+  <meta name="description" content="Integrate a complete head-unit image: UFS storage layout for firmware, QNX, Android and Linux, the secure boot chain, end-to-end boot, a single build script, packaging, flashing, multi-VM OTA and CI.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="integration">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 15</span></nav>
+          <div class="eyebrow">Module 15 · Head-unit SoC</div>
+          <h1>Full Image Integration, Boot &amp; Flashing</h1>
+          <p class="lead">Four builds produced a dozen images. This module turns them into one product: a storage layout that holds them all, a boot chain that verifies each one, a single script that builds and packs everything, and an update scheme that keeps four operating systems in step.</p>
+          <div class="page-meta"><span>⏱ 40 min read</span><span>🎯 Advanced</span><span>🧰 bash · sgdisk · fastboot · update_engine</span></div>
+        </header>
+
+        <section class="doc-section" id="storage" data-title="Storage layout">
+          <div class="sec-head"><h2><span class="sec-num">15.1</span>Storage layout</h2></div>
+          <p>UFS devices expose several <strong>logical units (LUNs)</strong>, each with its own GPT. Giving every OS its own LUN keeps ownership obvious: the host exports LUN 2 to Android and LUN 3 to Linux as whole virtio disks, and no guest can see another's partitions. Click a partition.</p>
+          <div class="pick" id="store-pick">
+            <div class="glass part-map">
+              <div class="pm-disk">
+                <div class="pm-disk-label"><span>LUN 0 · boot LUN · firmware</span><span>SoC vendor + OEM signed</span></div>
+                <div class="pm-bar">
+                  <button class="pm-seg" data-k="bl" style="--c:var(--vm-fw);--w:1"><b>bl_a / bl_b</b><small>bootloader</small></button>
+                  <button class="pm-seg" data-k="tfa" style="--c:var(--vm-fw);--w:1"><b>tfa_a / tfa_b</b><small>TF-A + TEE</small></button>
+                  <button class="pm-seg" data-k="fwcfg" style="--c:var(--vm-fw);--w:0.8"><b>fw_cfg</b><small>slot · devinfo</small></button>
+                </div>
+              </div>
+              <div class="pm-disk">
+                <div class="pm-disk-label"><span>LUN 1 · QNX</span><span>host + cluster</span></div>
+                <div class="pm-bar">
+                  <button class="pm-seg" data-k="hyp" style="--c:var(--vm-host);--w:1.4"><b>hyp_a / hyp_b</b><small>host IFS + guests</small></button>
+                  <button class="pm-seg" data-k="assets" style="--c:var(--vm-cluster);--w:1.2"><b>cluster_assets_a/b</b><small>HMI assets</small></button>
+                  <button class="pm-seg" data-k="qnxdata" style="--c:var(--vm-host);--w:1"><b>qnx_data</b><small>logs · config</small></button>
+                </div>
+              </div>
+              <div class="pm-disk">
+                <div class="pm-disk-label"><span>LUN 2 · Android (exported as one virtio disk)</span><span>Module 08</span></div>
+                <div class="pm-bar">
+                  <button class="pm-seg" data-k="aboot" style="--c:var(--vm-android);--w:1.6"><b>boot · init_boot · vendor_boot · vbmeta (_a/_b)</b><small>boot chain</small></button>
+                  <button class="pm-seg" data-k="asuper" style="--c:var(--vm-android);--w:2"><b>super</b><small>8 GiB</small></button>
+                  <button class="pm-seg" data-k="actl" style="--c:var(--vm-android);--w:0.7"><b>misc · metadata</b><small>control</small></button>
+                  <button class="pm-seg" data-k="adata" style="--c:var(--vm-android);--w:2"><b>userdata</b><small>32 GiB+</small></button>
+                </div>
+              </div>
+              <div class="pm-disk">
+                <div class="pm-disk-label"><span>LUN 3 · Linux SE</span><span>Module 14</span></div>
+                <div class="pm-bar">
+                  <button class="pm-seg" data-k="lroot" style="--c:var(--vm-linux);--w:1.4"><b>linux_rootfs_a / _b</b><small>ext4, read-only</small></button>
+                  <button class="pm-seg" data-k="ldata" style="--c:var(--vm-linux);--w:1"><b>linux_data</b><small>rw</small></button>
+                </div>
+              </div>
+              <div class="pm-legend"><span style="--c:var(--vm-fw)">firmware</span><span style="--c:var(--vm-host)">QNX host</span><span style="--c:var(--vm-cluster)">cluster</span><span style="--c:var(--vm-android)">Android</span><span style="--c:var(--vm-linux)">Linux SE</span></div>
+            </div>
+            <div class="info-panel glass" aria-live="polite"></div>
+          </div>
+          <script type="text/plain" data-code data-lang="conf" data-file="integration/layout/storage.yaml">
+# single source of truth for partition names and sizes — the pack tool generates GPTs from it
+lun0:
+  - { name: bl_a,  size: 4M,  image: firmware/bl.signed.bin }
+  - { name: bl_b,  size: 4M,  image: firmware/bl.signed.bin }
+  - { name: tfa_a, size: 4M,  image: firmware/tfa_tee.signed.bin }
+  - { name: tfa_b, size: 4M,  image: firmware/tfa_tee.signed.bin }
+  - { name: fw_cfg, size: 1M }
+lun1:
+  - { name: hyp_a, size: 128M, image: qnx/hyp_host.signed.ifs }
+  - { name: hyp_b, size: 128M, image: qnx/hyp_host.signed.ifs }
+  - { name: cluster_assets_a, size: 512M, image: qnx/cluster_assets.img }
+  - { name: cluster_assets_b, size: 512M, image: qnx/cluster_assets.img }
+  - { name: qnx_data, size: 1G }
+lun2:
+  - { name: boot_a,        size: 64M, image: android/boot.img }
+  - { name: boot_b,        size: 64M }
+  - { name: init_boot_a,   size: 8M,  image: android/init_boot.img }
+  - { name: init_boot_b,   size: 8M }
+  - { name: vendor_boot_a, size: 64M, image: android/vendor_boot.img }
+  - { name: vendor_boot_b, size: 64M }
+  - { name: vbmeta_a,      size: 64K, image: android/vbmeta.img }
+  - { name: vbmeta_b,      size: 64K }
+  - { name: vbmeta_system_a, size: 64K, image: android/vbmeta_system.img }
+  - { name: vbmeta_system_b, size: 64K }
+  - { name: misc,     size: 1M }
+  - { name: metadata, size: 64M }
+  - { name: super,    size: 8G, image: android/super.img }   # = BOARD_SUPER_PARTITION_SIZE
+  - { name: userdata, size: rest }
+lun3:
+  - { name: linux_rootfs_a, size: 1G, image: linux/rootfs.ext4 }
+  - { name: linux_rootfs_b, size: 1G }
+  - { name: linux_data,     size: 2G }
+          </script>
+        </section>
+
+        <section class="doc-section" id="firmware" data-title="Firmware & secure boot chain">
+          <div class="sec-head"><h2><span class="sec-num">15.2</span>Firmware &amp; secure boot chain</h2></div>
+          <p>Each stage verifies the next before running it. The chain starts with a key hash fused into the SoC and ends with AVB inside the Android guest.</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Stage</th><th>Verified by</th><th>Signing key owner</th></tr></thead>
+              <tbody>
+                <tr><td>First bootloader</td><td>Boot ROM, against the fused key hash</td><td>OEM (key hash fused at the factory)</td></tr>
+                <tr><td>TF-A (secure monitor) + trusted OS</td><td>Bootloader</td><td>SoC vendor / OEM</td></tr>
+                <tr><td>QNX host image (<code>hyp_a/b</code>)</td><td>Bootloader</td><td>OEM</td></tr>
+                <tr><td>Cluster IFS, guest U-Boot, Linux kernel</td><td>Embedded in the signed host image</td><td>OEM</td></tr>
+                <tr><td>Cluster assets, Linux rootfs</td><td>Host / Linux via dm-verity or signature check</td><td>OEM</td></tr>
+                <tr><td>Android boot images &amp; <code>super</code></td><td>Guest U-Boot (AVB), then dm-verity</td><td>OEM AVB keys (Module 08.4)</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout warn">
+            <div class="ci">⚠️</div>
+            <div><span class="ct">Irreversible</span>
+              <p>Fusing the secure-boot key hash cannot be undone. Lab boards stay unfused; production keys live in an HSM and are only used by the release signing pipeline. A board fused with the wrong key is scrap.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="boot-flow" data-title="End-to-end boot">
+          <div class="sec-head"><h2><span class="sec-num">15.3</span>End-to-end boot</h2></div>
+          <p>Step through a cold boot from ignition to the Android home screen. The diagram highlights who is running.</p>
+          <div class="glass soc mb" id="boot-diagram">
+            <div class="soc-row vms">
+              <div class="soc-blk vm c-cluster" data-k="cluster"><span class="os">QNX</span><b>Cluster VM</b><small>telltales · HMI</small></div>
+              <div class="soc-blk vm c-android" data-k="android"><span class="os">AAOS</span><b>Android VM</b><small>U-Boot → kernel → init</small></div>
+              <div class="soc-blk vm c-linux" data-k="linux"><span class="os">Linux</span><b>Linux SE VM</b><small>systemd · gateway</small></div>
+            </div>
+            <div class="soc-blk c-host" data-k="host"><span class="os">QNX</span><b>QNX Hypervisor host</b><small>startup · procnto · drivers · qvm</small></div>
+            <div class="soc-row" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+              <div class="soc-blk c-fw" data-k="rom"><b>Boot ROM</b><small>fused key</small></div>
+              <div class="soc-blk c-fw" data-k="bl"><b>Bootloader</b><small>DDR · load + verify</small></div>
+              <div class="soc-blk c-fw" data-k="tfa"><b>TF-A + TEE</b><small>secure world</small></div>
+            </div>
+            <div class="soc-blk c-hw" data-k="mcu"><b>Vehicle MCU</b><small>wake-up · power rails · CAN</small></div>
+          </div>
+          <div id="boot-stepper"></div>
+        </section>
+
+        <section class="doc-section" id="build-all" data-title="One script to build everything">
+          <div class="sec-head"><h2><span class="sec-num">15.4</span>One script to build everything</h2></div>
+          <p>Developers and CI must build the product the same way. One script, driven by <code>release.yaml</code> (Module 10.6), runs the four builds, collects their outputs into a staging directory and hands over to packing.</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="integration/build_all.sh">
+#!/bin/bash
+# Build every component of the head-unit image and stage the outputs.
+set -eo pipefail   # no -u: envsetup.sh / SDK env scripts are not nounset-safe
+HU=${HU:-$HOME/hu}
+STAGE=$HU/integration/out/stage
+VARIANT=${VARIANT:-userdebug}
+mkdir -p "$STAGE"/{firmware,qnx,android,linux} "$HU/integration/out/logs"
+
+build_android() {
+  ( cd "$HU/android" && source build/envsetup.sh &&
+    lunch "acme_hu-trunk_staging-$VARIANT" && m dist DIST_DIR=out/dist ) \
+    > "$HU/integration/out/logs/android.log" 2>&1
+  cp "$HU"/android/out/target/product/hu/{boot,init_boot,vendor_boot,vbmeta,vbmeta_system,super}.img "$STAGE/android/"
+  cp "$HU"/android/out/dist/acme_hu-target_files-*.zip "$STAGE/android/"
+}
+
+build_linux() {
+  ( cd "$HU/yocto" && source poky/oe-init-build-env build-linux-se &&
+    bitbake acme-linux-se-image ) > "$HU/integration/out/logs/linux.log" 2>&1
+  D=$HU/yocto/build-linux-se/tmp/deploy/images/acme-hu-vm
+  cp "$D/Image" "$HU/qnx/guests/linux/Image"                    # embedded in the host IFS
+  cp "$D/acme-linux-se-image-acme-hu-vm.rootfs.ext4" "$STAGE/linux/rootfs.ext4"
+}
+
+build_qnx() {   # cluster first: the host image embeds cluster.ifs, u-boot.bin and the Linux Image
+  "$HU/qnx/cluster/build.sh"  > "$HU/integration/out/logs/cluster.log" 2>&1
+  "$HU/qnx/host/build.sh"     > "$HU/integration/out/logs/host.log" 2>&1
+  cp "$HU/qnx/host/out/hyp_host.ifs" "$HU/qnx/cluster/out/cluster_assets.img" "$STAGE/qnx/"
+}
+
+# the kernel prebuilt (Module 09) and the guest U-Boot (Module 13) are inputs of the Android
+# and host builds; rebuild them here when their sources change.
+
+build_android &  ANDROID=$!
+build_linux   &  LINUX=$!
+wait $LINUX                     # host IFS needs the Linux kernel
+build_qnx
+wait $ANDROID
+
+tar -xzf "$HU/firmware/acme-soc-fw-r42.tar.gz" -C "$STAGE/firmware"
+echo "staged in $STAGE — next: integration/pack.py"
+          </script>
+        </section>
+
+        <section class="doc-section" id="packaging" data-title="Packaging the flashable bundle">
+          <div class="sec-head"><h2><span class="sec-num">15.5</span>Packaging the flashable bundle</h2></div>
+          <p>The pack step reads <code>storage.yaml</code>, checks every image fits its partition, generates one GPT per LUN, signs the images it owns, and writes a manifest with hashes so the flasher (and the factory) can verify the bundle.</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="pack.sh">
+python3 integration/pack.py \
+  --layout integration/layout/storage.yaml \
+  --stage  integration/out/stage \
+  --sign-config integration/signing.yaml \
+  --out    integration/out/hu-flash-2026.10.1
+
+ls integration/out/hu-flash-2026.10.1/
+#   gpt_lun0.bin … gpt_lun3.bin        partition tables
+#   images/…                           every partition image (sparse where useful)
+#   manifest.json                      name, LUN, offset, size, sha256 per image
+#   flash.sh                           developer flashing script
+          </script>
+          <div class="callout tip">
+            <div class="ci">💡</div>
+            <div><span class="ct">Tip</span>
+              <p>Make the pack tool fail hard when <code>super.img</code> is bigger than the <code>super</code> partition or when <code>BOARD_SUPER_PARTITION_SIZE</code> differs from <code>storage.yaml</code>. Catching it here saves a bricked board on the bench.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="flashing" data-title="Flashing the board">
+          <div class="sec-head"><h2><span class="sec-num">15.6</span>Flashing the board</h2></div>
+          <p>Factory and first-time flashing use the SoC vendor's USB download mode and tool (they can write any LUN, including firmware, on an empty device). Day-to-day development is faster with fastboot, if your bootloader provides it:</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="flash.sh (development)">
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/images"
+fastboot devices
+
+# QNX host + cluster assets (both slots on a fresh board)
+for s in a b; do
+  fastboot flash hyp_$s            hyp_host.signed.ifs
+  fastboot flash cluster_assets_$s cluster_assets.img
+done
+
+# Android (slot a), then wipe userdata on first flash
+fastboot flash boot_a          boot.img
+fastboot flash init_boot_a     init_boot.img
+fastboot flash vendor_boot_a   vendor_boot.img
+fastboot flash vbmeta_a        vbmeta.img
+fastboot flash vbmeta_system_a vbmeta_system.img
+fastboot flash super           super.img
+fastboot erase userdata
+fastboot erase metadata
+
+# Linux SE
+fastboot flash linux_rootfs_a rootfs.ext4
+
+fastboot set_active a
+fastboot reboot
+          </script>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Faster iteration</span>
+              <p>While working only on Android, rebuild one image (<code>m vendorimage</code> → <code>m superimage</code>) and flash only that partition. With a running Android you can also push to a <code>userdebug</code> build with <code>adb remount</code> + <code>adb sync vendor</code>.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="ota" data-title="Updating four OSes">
+          <div class="sec-head"><h2><span class="sec-num">15.7</span>Updating four OSes</h2></div>
+          <p>Every component has A/B slots, but the <strong>product</strong> must switch as a whole: a QNX host from release N with an Android from release N+1 is a combination nobody tested. The Linux SE OTA orchestrator therefore treats a release as one unit.</p>
+          <div class="flow"><span>download signed bundle</span><i>→</i><span>verify manifest</span><i>→</i><span>write inactive slots: fw · hyp · cluster · linux</span><i>→</i><span>Android: update_engine payload</span><i>→</i><span>switch all slots</span><i>→</i><span>reboot · health check · commit or roll back</span></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="orchestrator → Android">
+# the orchestrator serves the Android A/B payload over the internal network;
+# update_engine in the Android VM streams it into the inactive slot
+update_engine_client --update --follow \
+  --payload=http://192.168.100.1:8080/android/payload.bin \
+  --offset=<offset> --size=<size> \
+  --headers="$(cat payload_properties.txt)"
+          </script>
+          <ul>
+            <li>Android's payload comes from <code>ota_from_target_files</code> on the signed target-files (Module 08.6).</li>
+            <li>The host health monitor counts boot attempts per VM; if a VM fails to come up on the new slot, the whole system falls back.</li>
+            <li>Only after all VMs report healthy does the orchestrator mark the new slot successful (Android: <code>update_verifier</code> + Virtual A/B merge).</li>
+          </ul>
+        </section>
+
+        <section class="doc-section" id="ci" data-title="CI pipeline">
+          <div class="sec-head"><h2><span class="sec-num">15.8</span>CI pipeline</h2></div>
+          <script type="text/plain" data-code data-lang="conf" data-file=".ci/pipeline.yml (generic)">
+stages: [sync, build, integrate, sign, test, publish]
+
+sync:       { script: "integration/sync_all.sh --release integration/release.yaml" }
+
+build:android: { stage: build, script: "integration/build_all.sh --only android", cache: [ccache, android-out] }
+build:linux:   { stage: build, script: "integration/build_all.sh --only linux",   cache: [yocto-sstate, yocto-downloads] }
+build:qnx:     { stage: build, script: "integration/build_all.sh --only qnx", needs: [build:linux] }
+
+integrate:  { script: "integration/pack.py --layout integration/layout/storage.yaml --unsigned" }
+sign:       { script: "integration/sign_release.sh", environment: hsm-signing }   # release branches only
+test:hil:   { script: "integration/hil/flash_and_check.sh --assert-cluster-ms 2000 --assert-android-s 25" }
+publish:    { script: "integration/publish.sh", artifacts: [hu-flash-*, "*target_files*.zip", "*.spdx.json", symbols] }
+          </script>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-green">Cache everything</h4><p class="small">ccache and a reused <code>out/</code> for Android, sstate and downloads for Yocto. A cold full build takes hours; a warm incremental one, minutes.</p></div>
+            <div class="glass card"><h4 class="c-amber">Test on hardware</h4><p class="small">A hardware-in-the-loop rack flashes every candidate and measures cluster and Android boot times — regressions in the boot budget are bugs.</p></div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="checklist" data-title="Bring-up checklist">
+          <div class="sec-head"><h2><span class="sec-num">15.9</span>Bring-up checklist</h2></div>
+          <p class="small muted">Tick items as you go — progress is saved in this browser only.</p>
+          <ul class="checklist" data-store="bringup">
+            <li><label><input type="checkbox"><span>Workstation and CI containers build AAOS for Cuttlefish (Module 02).</span></label></li>
+            <li><label><input type="checkbox"><span>QNX host boots on the board with console, storage and SMMU (Module 11).</span></label></li>
+            <li><label><input type="checkbox"><span>Cluster VM shows telltales in under 2 s from power-on (Module 12).</span></label></li>
+            <li><label><input type="checkbox"><span>Linux SE VM boots with SELinux enforcing and reaches the network (Module 14).</span></label></li>
+            <li><label><input type="checkbox"><span>Guest U-Boot loads Android from the virtio disk with AVB verification (Module 13).</span></label></li>
+            <li><label><input type="checkbox"><span>Android reaches the home screen; <code>adb shell getprop ro.build.characteristics</code> is <code>automotive</code>.</span></label></li>
+            <li><label><input type="checkbox"><span>VHAL bridge exchanges properties with the host gateway; HVAC and speed work end to end.</span></label></li>
+            <li><label><input type="checkbox"><span>Displays, audio zones and the navigation stream to the cluster work.</span></label></li>
+            <li><label><input type="checkbox"><span>No SELinux denials in normal operation; VTS/CTS subsets pass.</span></label></li>
+            <li><label><input type="checkbox"><span><code>build_all.sh</code> + <code>pack.py</code> produce a bundle that flashes a blank board.</span></label></li>
+            <li><label><input type="checkbox"><span>Release signing with production keys and a full multi-VM OTA with rollback tested.</span></label></li>
+          </ul>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+  <script src="assets/js/pages/integration.js?v=__BUILD__"></script>
+</body>
+</html>

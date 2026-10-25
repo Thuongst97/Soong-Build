@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Soong Build Academy — From Android.bp to a Head-Unit Image</title>
+  <meta name="description" content="Interactive documentation of the Android Soong build system, from Android.bp basics to building a complete head-unit SoC image that combines a QNX Hypervisor host, a QNX cluster, Android Automotive and a Linux SE guest.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="home" class="landing">
+  <div id="site-header"></div>
+
+  <main>
+    <section class="hero">
+      <div class="hero-grid-bg"></div>
+      <div class="hero-inner">
+        <div>
+          <div class="eyebrow">Soong · Android.bp · AAOS · QNX · Yocto</div>
+          <h1>Master the <span class="grad">Soong build</span> — then ship a whole head-unit image.</h1>
+          <p class="lead">A hands-on path that starts with your first <code>Android.bp</code> and ends with one flashable bundle for an automotive SoC running a <strong>QNX Hypervisor</strong>, a <strong>QNX instrument cluster</strong>, <strong>Android Automotive</strong> and a <strong>Linux SE</strong> service VM.</p>
+          <div class="hero-cta">
+            <a class="btn primary" href="overview.html">Start from the basics →</a>
+            <a class="btn" href="headunit.html">🚗 Jump to the head unit</a>
+          </div>
+          <div class="hero-stats">
+            <div><b>15</b><span>modules</span></div>
+            <div><b>4</b><span>operating systems</span></div>
+            <div><b>1</b><span>flashable image</span></div>
+          </div>
+        </div>
+
+        <div class="glass soc hero-soc" aria-label="Head-unit SoC software stack">
+          <div class="soc-title" style="padding:18px 18px 0">One automotive SoC, four software worlds</div>
+          <div style="padding:0 18px 18px;display:flex;flex-direction:column;gap:10px">
+            <div class="soc-row vms">
+              <a class="soc-blk vm c-cluster" href="qnx-cluster.html"><span class="os">QNX</span><b>Cluster VM</b><small>speed · telltales · RVC</small></a>
+              <a class="soc-blk vm c-android" href="android-guest.html"><span class="os">AAOS</span><b>Android VM</b><small>IVI · apps · VHAL</small></a>
+              <a class="soc-blk vm c-linux" href="linux-se.html"><span class="os">Yocto</span><b>Linux SE VM</b><small>telematics · OTA · gateway</small></a>
+            </div>
+            <div class="soc-bus">virtio · vsock · shared memory</div>
+            <a class="soc-blk c-host" href="qnx-hypervisor.html"><span class="os">QNX</span><b>QNX Hypervisor host</b><small>qvm × 3 · vdevs · device drivers · display &amp; storage owners</small></a>
+            <a class="soc-blk c-fw" href="integration.html#firmware"><b>Boot ROM → bootloader → TrustZone / TF-A</b><small>secure boot chain · signed firmware</small></a>
+            <div class="soc-row hw" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+              <div class="soc-blk c-hw"><b>CPU</b><small>8–12 cores</small></div>
+              <div class="soc-blk c-hw"><b>GPU</b><small>shared</small></div>
+              <div class="soc-blk c-hw"><b>UFS</b><small>GPT LUNs</small></div>
+              <div class="soc-blk c-hw"><b>MCU</b><small>CAN / power</small></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="l-section alt">
+      <div class="l-inner">
+        <div class="l-head">
+          <div class="eyebrow">Learning path</div>
+          <h2>Four tracks, basic to production</h2>
+          <p class="muted">Each module builds on the previous one. Engineers who already know Soong can start at track 3.</p>
+        </div>
+        <div class="track" id="tracks"></div>
+      </div>
+    </section>
+
+    <section class="l-section">
+      <div class="l-inner">
+        <div class="l-head">
+          <div class="eyebrow">All modules</div>
+          <h2>What's inside</h2>
+        </div>
+        <div class="grid grid-3" id="module-cards"></div>
+      </div>
+    </section>
+
+    <section class="l-section alt">
+      <div class="l-inner">
+        <div class="l-head">
+          <div class="eyebrow">The end result</div>
+          <h2>From four source trees to one flashable bundle</h2>
+          <p class="muted">Every OS has its own toolchain. The last module ties them together with one script, one partition layout and one boot chain.</p>
+        </div>
+        <div class="grid grid-4">
+          <div class="glass card"><h4 class="c-blue">QNX host</h4><p class="small">QNX SDP + BSP → <code>mkifs</code> → <code>hyp_host.ifs</code> with qvm configs for every guest.</p></div>
+          <div class="glass card"><h4 class="c-amber">QNX cluster</h4><p class="small">Guest buildfile → <code>cluster.ifs</code> with Screen, the cluster HMI and early telltales.</p></div>
+          <div class="glass card"><h4 class="c-green">Android Automotive</h4><p class="small"><code>lunch</code> + <code>m dist</code> → <code>boot</code>, <code>init_boot</code>, <code>vendor_boot</code>, <code>super</code>, <code>vbmeta</code>.</p></div>
+          <div class="glass card"><h4 class="c-purple">Linux SE</h4><p class="small"><code>bitbake</code> → kernel <code>Image</code> + SELinux-enforcing <code>rootfs.ext4</code>.</p></div>
+        </div>
+        <div class="flow" style="justify-content:center;margin-top:28px">
+          <span>build_all.sh</span><i>→</i><span>sign</span><i>→</i><span>pack (GPT + images)</span><i>→</i><span>flash</span><i>→</i><span>boot: cluster &lt; 2 s · Android &lt; 20 s</span>
+        </div>
+        <div class="cta-band mt" style="margin-top:40px">
+          <h2>Ready?</h2>
+          <p class="muted">Start with what actually happens when you type <code>m</code>.</p>
+          <a class="btn primary" href="overview.html">Open module 01 →</a>
+        </div>
+      </div>
+    </section>
+  </main>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+  <script src="assets/js/pages/home.js?v=__BUILD__"></script>
+</body>
+</html>

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Head-Unit Architecture — Soong Build Academy</title>
+  <meta name="description" content="Architecture of a head-unit SoC that runs a QNX Hypervisor host, a QNX instrument cluster guest, an Android Automotive guest and a Linux SE guest: resource partitioning, inter-VM communication, boot-time budget and the four build toolchains.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="headunit">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 10</span></nav>
+          <div class="eyebrow">Module 10 · Head-unit SoC</div>
+          <h1>Head-Unit SoC Architecture</h1>
+          <p class="lead">A modern cockpit SoC runs the instrument cluster, the infotainment system and back-end services side by side. A <strong>Type-1 hypervisor</strong> splits one chip into isolated virtual machines, so that a crashing app on Android can never freeze the speedometer. This module is the map for the rest of the track.</p>
+          <div class="page-meta"><span>⏱ 25 min read</span><span>🎯 Intermediate → Advanced</span><span>🧩 QNX Hypervisor · QNX · AAOS · Yocto</span></div>
+        </header>
+
+        <section class="doc-section" id="architecture" data-title="The big picture">
+          <div class="sec-head"><h2><span class="sec-num">10.1</span>The big picture</h2></div>
+          <p>Click any block. Colours are used consistently in the following modules: <span class="c-blue">host</span>, <span class="c-amber">cluster</span>, <span class="c-green">Android</span>, <span class="c-purple">Linux SE</span>, <span class="c-red">firmware</span>.</p>
+          <div class="pick" id="soc-pick">
+            <div class="glass soc">
+              <div class="soc-title">Guest virtual machines</div>
+              <div class="soc-row vms">
+                <button class="soc-blk vm c-cluster" data-k="cluster"><span class="os">QNX</span><b>Cluster VM</b><small>ASIL-B partition</small>
+                  <ul><li>speedometer, telltales</li><li>warnings, RVC fallback</li><li>Screen + HMI engine</li></ul></button>
+                <button class="soc-blk vm c-android" data-k="android"><span class="os">AAOS</span><b>Android VM</b><small>QM · infotainment</small>
+                  <ul><li>launcher, media, maps</li><li>CarService + VHAL</li><li>center &amp; passenger displays</li></ul></button>
+                <button class="soc-blk vm c-linux" data-k="linux"><span class="os">Yocto</span><b>Linux SE VM</b><small>QM · services</small>
+                  <ul><li>telematics, V2X</li><li>OTA orchestration</li><li>firewall / gateway</li></ul></button>
+              </div>
+              <div class="soc-bus" data-k="ivc">⇅ inter-VM: virtio-net · vsock · shared memory + doorbells</div>
+              <button class="soc-blk c-host" data-k="host"><span class="os">QNX</span><b>QNX Hypervisor host</b><small>microkernel · qvm per guest · storage, display &amp; GPU drivers · vehicle gateway · health monitor</small></button>
+              <button class="soc-blk c-fw" data-k="fw"><b>Boot ROM → bootloader → TF-A / TrustZone</b><small>secure boot · trusted OS · power &amp; clocks firmware</small></button>
+              <div class="soc-title">Hardware</div>
+              <div class="soc-row hw">
+                <button class="soc-blk c-hw" data-k="cpu"><b>CPU</b><small>big.LITTLE 8–12</small></button>
+                <button class="soc-blk c-hw" data-k="gpu"><b>GPU / display</b><small>3–5 panels</small></button>
+                <button class="soc-blk c-hw" data-k="ufs"><b>UFS / eMMC</b><small>128–256 GB</small></button>
+                <button class="soc-blk c-hw" data-k="io"><b>I/O</b><small>USB · Wi-Fi · BT · ETH</small></button>
+                <button class="soc-blk c-hw" data-k="mcu"><b>Vehicle MCU</b><small>CAN · power</small></button>
+              </div>
+            </div>
+            <div class="info-panel glass" aria-live="polite"></div>
+          </div>
+          <div class="callout analogy">
+            <div class="ci">🎭</div>
+            <div><span class="ct">Analogy</span>
+              <p>The SoC is an office building. The <strong>hypervisor</strong> is the building management: it owns the walls, power and the front door, and rents fully separated floors to tenants. The <strong>cluster</strong> is the safety office on the ground floor with its own emergency exit; <strong>Android</strong> is the busy open-plan floor; <strong>Linux SE</strong> is the mail room that talks to the outside world. Tenants talk only through intercoms the management installed.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="allocation" data-title="Resource partitioning">
+          <div class="sec-head"><h2><span class="sec-num">10.2</span>Resource partitioning</h2></div>
+          <p>Each physical resource has exactly one owner. Other VMs either get a dedicated slice (CPU, RAM), a pass-through device, or a <em>virtual</em> device served by the owner. The table is an example for a 12-core SoC with 16 GB RAM — the real numbers come out of your performance budget.</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Resource</th><th class="c-blue">QNX host</th><th class="c-amber">Cluster</th><th class="c-green">Android</th><th class="c-purple">Linux SE</th></tr></thead>
+              <tbody>
+                <tr><td>CPU</td><td>shares cores, highest priority</td><td>2 cores, pinned</td><td>8 vCPUs</td><td>2 vCPUs</td></tr>
+                <tr><td>RAM</td><td>1 GB</td><td>1 GB</td><td>12 GB</td><td>2 GB</td></tr>
+                <tr><td>GPU</td><td>owns the driver</td><td>priority context</td><td>virtualised context</td><td>—</td></tr>
+                <tr><td>Displays</td><td>display controller</td><td>cluster panel (+ HUD)</td><td>center + passenger panels</td><td>—</td></tr>
+                <tr><td>Storage</td><td>owns UFS, serves partitions</td><td>virtio-blk (read-only)</td><td>virtio-blk (super, data…)</td><td>virtio-blk</td></tr>
+                <tr><td>Audio</td><td>DSP / amplifier</td><td>chimes (priority)</td><td>virtio-snd or shmem audio</td><td>—</td></tr>
+                <tr><td>Network</td><td>internal switch</td><td>—</td><td>virtio-net</td><td>Ethernet pass-through (T-Box, gateway)</td></tr>
+                <tr><td>USB / Wi-Fi / BT</td><td>—</td><td>—</td><td>pass-through</td><td>—</td></tr>
+                <tr><td>Vehicle MCU</td><td>SPI driver, vehicle gateway</td><td>speed, telltale signals</td><td>via VHAL bridge (vsock)</td><td>diagnostics</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="ivc" data-title="Inter-VM communication">
+          <div class="sec-head"><h2><span class="sec-num">10.3</span>Inter-VM communication</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Mechanism</th><th>Good for</th><th>Example on this head unit</th></tr></thead>
+              <tbody>
+                <tr><td>virtio-net (virtual Ethernet)</td><td>Standard TCP/IP, SOME/IP, DoIP</td><td>Android ⇄ Linux SE: connectivity, OTA downloads</td></tr>
+                <tr><td>vsock</td><td>Control RPC between a guest and the host (gRPC, protobuf)</td><td>Android VHAL bridge ⇄ host vehicle gateway</td></tr>
+                <tr><td>Shared memory + doorbell</td><td>Bulk data with low latency</td><td>Navigation map frames from Android to the cluster</td></tr>
+                <tr><td>virtio-console</td><td>Logs and debug shells</td><td><code>hvc0</code> of each guest, multiplexed on the host</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>Following one vehicle property from the HVAC app to the car shows how the layers stack:</p>
+          <div class="flow"><span>HVAC app</span><i>→</i><span>CarService</span><i>→</i><span>VHAL (acme.vehicle.bridge)</span><i>→ vsock →</i><span>host vehicle gateway</span><i>→ SPI →</i><span>MCU</span><i>→ CAN →</i><span>HVAC ECU</span></div>
+        </section>
+
+        <section class="doc-section" id="boot-timing" data-title="Boot-time budget">
+          <div class="sec-head"><h2><span class="sec-num">10.4</span>Boot-time budget</h2></div>
+          <p>Regulation and user expectations set hard deadlines. The architecture exists largely to meet them: the safety-relevant pieces boot first and never wait for Android.</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Milestone</th><th>Typical target</th><th>Owner</th></tr></thead>
+              <tbody>
+                <tr><td>Splash / logo on the cluster</td><td>&lt; 1 s</td><td>Bootloader or QNX host</td></tr>
+                <tr><td>Telltales &amp; speed on the cluster</td><td>&lt; 2 s</td><td>Cluster VM</td></tr>
+                <tr><td>Rear-view camera after selecting reverse</td><td>&lt; 2 s (regulatory)</td><td>Host or cluster (early RVC)</td></tr>
+                <tr><td>Linux SE network &amp; gateway up</td><td>&lt; 5 s</td><td>Linux SE VM</td></tr>
+                <tr><td>Android home screen usable</td><td>&lt; 15–25 s (often hidden by suspend-to-RAM)</td><td>Android VM</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>See the full step-by-step boot in <a href="integration.html#boot-flow">Module 15.3</a>.</p>
+        </section>
+
+        <section class="doc-section" id="build-matrix" data-title="Four toolchains, one product">
+          <div class="sec-head"><h2><span class="sec-num">10.5</span>Four toolchains, one product</h2></div>
+          <p>Soong builds only the Android part. Each other world has its own build system, and the integration step joins their outputs in one storage layout.</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Component</th><th>Source</th><th>Build tool</th><th>Main outputs</th><th>Module</th></tr></thead>
+              <tbody>
+                <tr><td class="c-red">Firmware</td><td>SoC vendor release</td><td>vendor tools (mostly prebuilt, signed)</td><td>bootloader, TF-A, trusted OS</td><td><a href="integration.html#firmware">15.2</a></td></tr>
+                <tr><td class="c-blue">QNX host</td><td>QNX SDP + SoC BSP + your code</td><td><code>make</code>, <code>qcc</code>, <code>mkifs</code></td><td><code>hyp_host.ifs</code>, qvm configs</td><td><a href="qnx-hypervisor.html">11</a></td></tr>
+                <tr><td class="c-amber">QNX cluster</td><td>QNX SDP + cluster HMI</td><td><code>make</code>, <code>mkifs</code></td><td><code>cluster.ifs</code></td><td><a href="qnx-cluster.html">12</a></td></tr>
+                <tr><td class="c-green">Android kernel</td><td>kernel manifest</td><td>Kleaf (Bazel)</td><td><code>Image</code>, <code>*.ko</code></td><td><a href="kernel.html">09</a></td></tr>
+                <tr><td class="c-green">Android</td><td>AOSP + vendor trees</td><td><strong>Soong</strong> / Kati / Ninja</td><td><code>boot</code>, <code>init_boot</code>, <code>vendor_boot</code>, <code>vbmeta</code>, <code>super</code></td><td><a href="android-guest.html">13</a></td></tr>
+                <tr><td class="c-purple">Linux SE</td><td>Yocto layers</td><td>BitBake</td><td>kernel <code>Image</code>, <code>rootfs.ext4</code></td><td><a href="linux-se.html">14</a></td></tr>
+                <tr><td>Integration</td><td>your scripts</td><td>shell / Python</td><td>GPT layout + flashable bundle + OTA</td><td><a href="integration.html">15</a></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="workspace" data-title="Workspace & super-manifest">
+          <div class="sec-head"><h2><span class="sec-num">10.6</span>Workspace &amp; super-manifest</h2></div>
+          <p>Keep the four trees side by side in one workspace and describe a release with a single file that pins every input — git manifests, the QNX SDP package set, the firmware drop and the Yocto layer revisions.</p>
+          <div class="tree glass"><span class="d">~/hu/</span>
+├── <span class="d">android/</span>          <span class="c"># repo: AOSP + device/acme + vendor/acme   (Module 02)</span>
+├── <span class="d">kernel/</span>           <span class="c"># repo: kernel manifest + vendor modules    (Module 09)</span>
+├── <span class="d">qnx/</span>
+│   ├── <span class="d">sdp/</span>          <span class="c"># QNX SDP installed by QNX Software Center (licensed)</span>
+│   ├── <span class="d">bsp/</span>          <span class="c"># SoC BSP for QNX</span>
+│   ├── <span class="d">host/</span>         <span class="c"># git: host buildfile, qvm configs, host services (Module 11)</span>
+│   └── <span class="d">cluster/</span>      <span class="c"># git: cluster buildfile + HMI                (Module 12)</span>
+├── <span class="d">yocto/</span>            <span class="c"># poky + meta-* layers + meta-acme             (Module 14)</span>
+├── <span class="d">firmware/</span>         <span class="c"># signed SoC firmware drop</span>
+└── <span class="d">integration/</span>      <span class="c"># build_all.sh, partition layout, pack tool, release.yaml (Module 15)</span></div>
+          <script type="text/plain" data-code data-lang="conf" data-file="integration/release.yaml">
+release: HU-2026.10.1
+android:
+  manifest: manifests/android-20261020.xml       # repo manifest -r output
+  lunch: acme_hu-trunk_staging-user              # use the release config your branch ships with
+kernel:
+  manifest: manifests/kernel-20261018.xml
+qnx:
+  sdp: "8.0"                                     # plus exact package versions from Software Center
+  packages: manifests/qnx-packages.txt
+  host: { repo: git@git.acme.example:qnx/host.git,    rev: 3f2c9e1 }
+  cluster: { repo: git@git.acme.example:qnx/cluster.git, rev: 91ab07d }
+yocto:
+  layers: manifests/yocto-layers.xml              # poky, meta-openembedded, meta-selinux, meta-acme
+  image: acme-linux-se-image
+firmware:
+  drop: acme-soc-fw-r42.tar.gz
+  sha256: 6f1d…
+          </script>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+  <script src="assets/js/pages/headunit.js?v=__BUILD__"></script>
+</body>
+</html>

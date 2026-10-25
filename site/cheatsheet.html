@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cheat Sheet — Soong Build Academy</title>
+  <meta name="description" content="Every command used in the Soong Build Academy on one page: repo, lunch, m, ninja queries, image tools, Kleaf, QNX mkifs and qvm, and Yocto bitbake.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="cheatsheet">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Reference A</span></nav>
+          <div class="eyebrow">Reference · A</div>
+          <h1>Command Cheat Sheet</h1>
+          <p class="lead">The commands from every module, grouped by tool. Each block has a copy button.</p>
+        </header>
+
+        <section class="doc-section" id="cs-android" data-title="Android / Soong">
+          <div class="sec-head"><h2><span class="sec-num">A.1</span>Android / Soong</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="sync & build">
+repo init -u https://android.googlesource.com/platform/manifest -b android-latest-release --partial-clone
+repo sync -c -j8 --no-tags
+repo manifest -r -o snapshot.xml                    # pin exact revisions
+
+source build/envsetup.sh
+lunch acme_hu-trunk_staging-userdebug               # product-release-variant
+printconfig
+
+m                                                    # everything (droid)
+m <module>                                           # one module + deps
+mm / mmm <dir>                                       # modules in cwd / dir
+m nothing                                            # only Soong + Kati: validate build files
+m dist DIST_DIR=out/dist                             # + target-files, img zip
+m installclean                                       # after product-config changes
+m -j$(nproc) showcommands <module>                   # print commands
+          </script>
+          <script type="text/plain" data-code data-lang="bash" data-file="navigation">
+croot                      # top of tree
+gomod <module>             # cd to module dir
+pathmod / outmod <module>  # source dir / installed files
+mgrep / cgrep / jgrep / sepgrep <pattern>
+get_build_var PRODUCT_PACKAGES
+bpfmt -w Android.bp        # format
+androidmk Android.mk > Android.bp
+          </script>
+        </section>
+
+        <section class="doc-section" id="cs-query" data-title="Inspect & debug">
+          <div class="sec-head"><h2><span class="sec-num">A.2</span>Inspect &amp; debug</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="debug">
+less out/error.log
+gzip -cd out/verbose.log.gz | less
+NINJA=prebuilts/build-tools/linux-x86/bin/ninja
+$NINJA -f out/combined-$TARGET_PRODUCT.ninja -t query <output-file>
+$NINJA -f out/combined-$TARGET_PRODUCT.ninja -t commands <output-file>
+NINJA_ARGS="-d explain" m <module>                   # why does it rebuild?
+m json-module-graph                                  # out/soong/module-graph.json
+jq '.["<module>"]' $ANDROID_PRODUCT_OUT/module-info.json
+# out/build.trace.gz → https://ui.perfetto.dev
+          </script>
+        </section>
+
+        <section class="doc-section" id="cs-images" data-title="Images & signing">
+          <div class="sec-head"><h2><span class="sec-num">A.3</span>Images &amp; signing</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="images">
+m bootimage vendorbootimage superimage systemimage vendorimage
+unpack_bootimg --boot_img vendor_boot.img --out /tmp/vb
+lpdump super.img
+simg2img super.img super.raw
+avbtool info_image --image vbmeta.img
+avbtool verify_image --image vbmeta.img --follow_chain_partitions
+
+sign_target_files_apks -o -d <keydir> unsigned-tf.zip signed-tf.zip
+img_from_target_files signed-tf.zip images.zip
+ota_from_target_files -k <keydir>/releasekey signed-tf.zip ota.zip
+ota_from_target_files -i old-tf.zip new-tf.zip incremental.zip
+          </script>
+        </section>
+
+        <section class="doc-section" id="cs-kernel" data-title="Kernel">
+          <div class="sec-head"><h2><span class="sec-num">A.4</span>Kernel</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="kleaf">
+repo init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6 && repo sync -c
+tools/bazel run //common:kernel_aarch64_dist -- --destdir=out/gki
+tools/bazel run //common-modules/virtual-device:virtual_device_aarch64_dist -- --destdir=out/vd
+dtc -I dts -O dtb -o board.dtb board.dts
+          </script>
+        </section>
+
+        <section class="doc-section" id="cs-qnx" data-title="QNX">
+          <div class="sec-head"><h2><span class="sec-num">A.5</span>QNX</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="qnx">
+source ~/qnx800/qnxsdp-env.sh
+make -C bsp                                          # BSP startup + drivers
+mkifs -v -r install build/hyp_host.build out/hyp_host.ifs
+dumpifs out/hyp_host.ifs
+mkqnx6fsimg build/assets.build out/cluster_assets.img
+# on target
+qvm @/etc/qvm/android.qvmconf &
+slog2info | tail
+          </script>
+        </section>
+
+        <section class="doc-section" id="cs-yocto" data-title="Yocto">
+          <div class="sec-head"><h2><span class="sec-num">A.6</span>Yocto</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="yocto">
+source poky/oe-init-build-env build-linux-se
+bitbake-layers add-layer ../meta-acme
+bitbake acme-linux-se-image
+bitbake -e acme-linux-se-image | grep ^IMAGE_INSTALL=
+bitbake -c menuconfig virtual/kernel
+bitbake -c cleansstate <recipe>
+devtool modify <recipe>
+          </script>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>

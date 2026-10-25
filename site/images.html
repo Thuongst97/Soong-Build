@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Partitions & Images — Soong Build Academy</title>
+  <meta name="description" content="Android partitions and images: boot, init_boot, vendor_boot, super and dynamic partitions, Android Verified Boot, A/B and Virtual A/B, target-files, OTA packages and release signing.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="images">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 08</span></nav>
+          <div class="eyebrow">Module 08 · Images &amp; kernel</div>
+          <h1>Partitions &amp; Image Generation</h1>
+          <p class="lead">The last thing the Android build does is turn staging directories into images. In a head unit those images become a handful of partitions inside a much larger storage layout shared with QNX and Linux — so you must know exactly what each one holds, how big it is, and who verifies it.</p>
+          <div class="page-meta"><span>⏱ 35 min read</span><span>🎯 Intermediate</span><span>🧰 mkbootimg · lpmake · avbtool</span></div>
+        </header>
+
+        <section class="doc-section" id="partitions" data-title="Partition map">
+          <div class="sec-head"><h2><span class="sec-num">8.1</span>Partition map</h2></div>
+          <p>Click a partition. The upper bar is what the Android guest sees as physical partitions; the lower bar shows the logical partitions packed inside <code>super</code>.</p>
+          <div class="pick" id="part-pick">
+            <div class="glass part-map">
+              <div class="pm-disk">
+                <div class="pm-disk-label"><span>Android guest disk (GPT, slot _a shown)</span><span>physical</span></div>
+                <div class="pm-bar">
+                  <button class="pm-seg" data-k="boot" style="--c:var(--vm-fw);--w:1.2"><b>boot_a</b><small>GKI kernel</small></button>
+                  <button class="pm-seg" data-k="init_boot" style="--c:var(--vm-fw);--w:1"><b>init_boot_a</b><small>generic ramdisk</small></button>
+                  <button class="pm-seg" data-k="vendor_boot" style="--c:var(--vm-fw);--w:1.2"><b>vendor_boot_a</b><small>vendor ramdisk · DTB</small></button>
+                  <button class="pm-seg" data-k="dtbo" style="--c:var(--vm-fw);--w:0.8"><b>dtbo_a</b><small>overlays</small></button>
+                  <button class="pm-seg" data-k="vbmeta" style="--c:var(--amber);--w:0.8"><b>vbmeta_a</b><small>AVB root</small></button>
+                  <button class="pm-seg" data-k="super" style="--c:var(--blue);--w:3"><b>super</b><small>dynamic partitions</small></button>
+                  <button class="pm-seg" data-k="misc" style="--c:#94a3b8;--w:0.6"><b>misc</b><small>BCB</small></button>
+                  <button class="pm-seg" data-k="metadata" style="--c:#94a3b8;--w:0.7"><b>metadata</b><small>keys · snapshots</small></button>
+                  <button class="pm-seg" data-k="userdata" style="--c:var(--green);--w:2.5"><b>userdata</b><small>/data</small></button>
+                </div>
+              </div>
+              <div class="pm-disk">
+                <div class="pm-disk-label"><span>inside super (logical, per slot)</span><span>lpmake</span></div>
+                <div class="pm-bar">
+                  <button class="pm-seg" data-k="system" style="--c:var(--blue);--w:3"><b>system</b><small>framework</small></button>
+                  <button class="pm-seg" data-k="system_ext" style="--c:var(--blue);--w:1.2"><b>system_ext</b><small>OEM system</small></button>
+                  <button class="pm-seg" data-k="product" style="--c:var(--purple);--w:1.6"><b>product</b><small>OEM apps</small></button>
+                  <button class="pm-seg" data-k="vendor" style="--c:var(--amber);--w:1.6"><b>vendor</b><small>HALs</small></button>
+                  <button class="pm-seg" data-k="vendor_dlkm" style="--c:var(--amber);--w:0.9"><b>vendor_dlkm</b><small>kernel modules</small></button>
+                  <button class="pm-seg" data-k="odm" style="--c:var(--amber);--w:0.7"><b>odm</b><small>variant</small></button>
+                </div>
+              </div>
+              <div class="pm-legend">
+                <span style="--c:var(--vm-fw)">boot chain</span><span style="--c:var(--amber)">vendor / AVB</span><span style="--c:var(--blue)">system</span><span style="--c:var(--purple)">product</span><span style="--c:var(--green)">user data</span><span style="--c:#94a3b8">control</span>
+              </div>
+            </div>
+            <div class="info-panel glass" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="boot-images" data-title="boot, init_boot & vendor_boot">
+          <div class="sec-head"><h2><span class="sec-num">8.2</span><code>boot</code>, <code>init_boot</code> &amp; <code>vendor_boot</code></h2></div>
+          <p>The boot image format has evolved through header versions. New devices with GKI use <strong>v4</strong>, which splits the old <code>boot.img</code> into three images owned by different parties.</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Header</th><th>Introduced</th><th>Layout</th></tr></thead>
+              <tbody>
+                <tr><td>v0 – v2</td><td>Legacy – Android 10</td><td>Kernel + ramdisk (+ DTB in v2) all in <code>boot</code>.</td></tr>
+                <tr><td>v3</td><td>Android 11</td><td><code>boot</code> = kernel + generic ramdisk; new <code>vendor_boot</code> = vendor ramdisk + DTB + vendor cmdline.</td></tr>
+                <tr><td>v4</td><td>Android 12</td><td>Multiple vendor ramdisk fragments, <strong>bootconfig</strong> for <code>androidboot.*</code> parameters, boot signature for GKI.</td></tr>
+                <tr><td>v4 + <code>init_boot</code></td><td>Android 13</td><td>Generic ramdisk moves to <code>init_boot</code>; <code>boot</code> holds only the GKI kernel.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <script type="text/plain" data-code data-lang="make" data-file="BoardConfig.mk (boot)">
+BOARD_BOOT_HEADER_VERSION := 4
+BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOT_HEADER_VERSION)
+BOARD_BOOTIMAGE_PARTITION_SIZE        := 67108864    # 64 MiB
+BOARD_INIT_BOOT_IMAGE_PARTITION_SIZE  := 8388608     # 8 MiB
+BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE := 67108864
+BOARD_KERNEL_CMDLINE  += console=hvc0 loglevel=4
+BOARD_BOOTCONFIG      += androidboot.hardware=hu androidboot.console=hvc0
+          </script>
+          <script type="text/plain" data-code data-lang="bash" data-file="inspect-boot.sh">
+unpack_bootimg --boot_img $ANDROID_PRODUCT_OUT/vendor_boot.img --out /tmp/vb --format=mkbootimg
+ls /tmp/vb            # vendor_ramdisk00, dtb, bootconfig …
+          </script>
+        </section>
+
+        <section class="doc-section" id="dynamic" data-title="Dynamic partitions & super">
+          <div class="sec-head"><h2><span class="sec-num">8.3</span>Dynamic partitions &amp; <code>super</code></h2></div>
+          <p>Instead of fixed-size GPT partitions for system, vendor and friends, one large <code>super</code> partition holds <strong>logical partitions</strong> that can be resized by an OTA. Their layout is stored in LP metadata at the start of <code>super</code>; first-stage init maps them with device-mapper.</p>
+          <script type="text/plain" data-code data-lang="make" data-file="BoardConfig.mk (super)">
+BOARD_SUPER_PARTITION_SIZE := 8589934592                  # must equal the GPT partition
+BOARD_SUPER_PARTITION_GROUPS := acme_dynamic_partitions
+BOARD_ACME_DYNAMIC_PARTITIONS_SIZE := 8585740288           # super minus metadata overhead
+BOARD_ACME_DYNAMIC_PARTITIONS_PARTITION_LIST := \
+    system system_ext product vendor vendor_dlkm odm
+
+BOARD_SYSTEMIMAGE_FILE_SYSTEM_TYPE := erofs
+BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE := erofs
+BOARD_PRODUCTIMAGE_FILE_SYSTEM_TYPE := erofs
+          </script>
+          <script type="text/plain" data-code data-lang="bash" data-file="super.sh">
+m superimage                                  # build super.img from the partition images
+lpdump $ANDROID_PRODUCT_OUT/super.img         # show groups, partitions and extents
+simg2img super.img super.raw                  # sparse → raw if your flasher needs it
+          </script>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Note</span>
+              <p>The size of <code>super</code> is fixed by the storage layout that also holds QNX and Linux (Module 15). Choose it once with growth margin — changing it later means repartitioning devices in the field.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="avb" data-title="Android Verified Boot">
+          <div class="sec-head"><h2><span class="sec-num">8.4</span>Android Verified Boot</h2></div>
+          <p>AVB extends the chain of trust from the bootloader to every byte Android executes. The bootloader holds a public key, verifies <code>vbmeta</code>, and <code>vbmeta</code> carries hashes (small partitions) or dm-verity hashtree roots (large partitions) for everything else.</p>
+          <div class="flow"><span>root key in guest loader</span><i>→</i><span>vbmeta</span><i>→</i><span>boot · init_boot · vendor_boot · dtbo (hash)</span><i>→</i><span>vbmeta_system (chained key)</span><i>→</i><span>system · system_ext · product (hashtree)</span></div>
+          <script type="text/plain" data-code data-lang="make" data-file="BoardConfig.mk (AVB)">
+BOARD_AVB_ENABLE := true
+BOARD_AVB_ALGORITHM := SHA256_RSA4096
+BOARD_AVB_KEY_PATH  := vendor/acme/security/avb/vbmeta_rsa4096.pem
+BOARD_AVB_ROLLBACK_INDEX := $(PLATFORM_SECURITY_PATCH_TIMESTAMP)
+
+# system-side partitions in their own vbmeta, signed with a separate key
+BOARD_AVB_VBMETA_SYSTEM := system system_ext product
+BOARD_AVB_VBMETA_SYSTEM_KEY_PATH := vendor/acme/security/avb/vbmeta_system_rsa4096.pem
+BOARD_AVB_VBMETA_SYSTEM_ALGORITHM := SHA256_RSA4096
+BOARD_AVB_VBMETA_SYSTEM_ROLLBACK_INDEX_LOCATION := 1
+          </script>
+          <script type="text/plain" data-code data-lang="bash" data-file="avb.sh">
+avbtool info_image --image $ANDROID_PRODUCT_OUT/vbmeta.img
+avbtool verify_image --image $ANDROID_PRODUCT_OUT/vbmeta.img --follow_chain_partitions
+          </script>
+          <div class="callout warn">
+            <div class="ci">⚠️</div>
+            <div><span class="ct">Head-unit specific</span>
+              <p>In a VM, the code that verifies <code>vbmeta</code> is the <strong>guest bootloader</strong> (or the hypervisor's loader) — not the SoC's bootloader. Decide early who holds the AVB public key and the rollback indexes, and how the hypervisor's own secure-boot chain vouches for that loader (Module 15).</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="ab" data-title="A/B (seamless) updates">
+          <div class="sec-head"><h2><span class="sec-num">8.5</span>A/B (seamless) updates</h2></div>
+          <p>With A/B every updatable partition exists twice (<code>_a</code>/<code>_b</code>). <code>update_engine</code> writes the update to the inactive slot while the car is driving; the next boot switches slots and falls back automatically if the new slot fails to boot. <strong>Virtual A/B</strong> avoids doubling the dynamic partitions by writing copy-on-write snapshots that are merged after a successful boot.</p>
+          <script type="text/plain" data-code data-lang="make" data-file="device.mk / BoardConfig.mk (A/B)">
+# device.mk
+$(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota/android_t_baseline.mk)
+PRODUCT_PACKAGES += update_engine update_verifier
+
+# BoardConfig.mk
+AB_OTA_UPDATER := true
+AB_OTA_PARTITIONS := boot init_boot vendor_boot dtbo vbmeta vbmeta_system \
+                     system system_ext product vendor vendor_dlkm odm
+BOARD_USES_METADATA_PARTITION := true
+          </script>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Note</span>
+              <p>A/B needs a <strong>boot control</strong> implementation (the Boot HAL) that the guest bootloader honours — usually by reading/writing slot metadata in <code>misc</code>. In a hypervisor system, slot switching must be coordinated with QNX and Linux updates; see Module 15.7.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="targetfiles" data-title="target-files, dist & OTA packages">
+          <div class="sec-head"><h2><span class="sec-num">8.6</span>target-files, dist &amp; OTA packages</h2></div>
+          <p><strong>target-files</strong> is the build's master archive: the contents of every partition plus metadata and tools input. Every release step — signing, image creation, OTA generation — consumes it, so you never need the build tree again.</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="release.sh">
+m dist DIST_DIR=out/dist
+ls out/dist/
+#   acme_hu-target_files-<build>.zip   ← keep this for every release
+#   acme_hu-img-<build>.zip            ← flashable images
+#   acme_hu-ota-<build>.zip            ← full OTA package
+#   symbols, module-info, …
+
+img_from_target_files out/dist/acme_hu-target_files-*.zip images.zip
+ota_from_target_files out/dist/acme_hu-target_files-*.zip full-ota.zip
+ota_from_target_files -i old-target_files.zip new-target_files.zip incremental-ota.zip
+          </script>
+        </section>
+
+        <section class="doc-section" id="signing" data-title="Release signing">
+          <div class="sec-head"><h2><span class="sec-num">8.7</span>Release signing</h2></div>
+          <p>Development builds are signed with the public test keys in <code>build/make/target/product/security</code>. Anyone can sign with those — a production head unit must be re-signed with private keys that never leave your signing server.</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="sign.sh">
+# once: generate keys (store them in an HSM-backed signing service)
+for k in releasekey platform shared media networkstack; do
+  development/tools/make_key vendor/acme/security/keys/$k '/C=DE/O=Acme/CN=Acme HU'
+done
+
+# every release
+sign_target_files_apks -o -d vendor/acme/security/keys \
+  --avb_vbmeta_key vendor/acme/security/avb/vbmeta_rsa4096.pem --avb_vbmeta_algorithm SHA256_RSA4096 \
+  --avb_system_key vendor/acme/security/avb/vbmeta_system_rsa4096.pem --avb_system_algorithm SHA256_RSA4096 \
+  out/dist/acme_hu-target_files-*.zip signed-target_files.zip
+
+img_from_target_files signed-target_files.zip signed-images.zip
+ota_from_target_files -k vendor/acme/security/keys/releasekey signed-target_files.zip signed-ota.zip
+          </script>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+  <script src="assets/js/pages/images.js?v=__BUILD__"></script>
+</body>
+</html>

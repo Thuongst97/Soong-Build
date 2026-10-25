@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Build System Overview — Soong Build Academy</title>
+  <meta name="description" content="How the Android build works: soong_ui, Blueprint, Soong, Kati and Ninja, what happens when you type m, module variants and the out/ directory.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="overview">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 01</span></nav>
+          <div class="eyebrow">Module 01 · Foundations</div>
+          <h1>The Android Build System at a Glance</h1>
+          <p class="lead">“Soong” is shorthand for a small pipeline of tools. Before writing a single <code>Android.bp</code>, learn which tool reads which file, what each produces, and where the results land in <code>out/</code>. Every later debugging session starts from this picture.</p>
+          <div class="page-meta"><span>⏱ 20 min read</span><span>🎯 Beginner</span><span>📂 build/soong · build/blueprint · build/make</span></div>
+        </header>
+
+        <section class="doc-section" id="history" data-title="From Make to Soong">
+          <div class="sec-head"><h2><span class="sec-num">1.1</span>From Make to Soong</h2></div>
+          <p>Until Android 6 the whole platform was one giant GNU Make program. As AOSP grew past tens of thousands of modules, Make became slow to start (minutes just to parse) and impossible to reason about, because any makefile could change any global variable. Android 7 introduced a split: <strong>declarative module files</strong> handled by <strong>Soong</strong>, with legacy makefiles translated by <strong>Kati</strong>, and both executed by <strong>Ninja</strong>.</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Era</th><th>What changed</th><th>What it means for you</th></tr></thead>
+              <tbody>
+                <tr><td>≤ Android 6</td><td>Pure GNU Make, <code>Android.mk</code> everywhere</td><td>Old vendor trees and tutorials still look like this.</td></tr>
+                <tr><td>Android 7 (2016)</td><td>Soong, Blueprint, Kati and Ninja introduced</td><td>Make no longer runs commands; it only <em>describes</em> them for Ninja.</td></tr>
+                <tr><td>Android 8 – 13</td><td>Most platform modules converted to <code>Android.bp</code>; <code>Android.mk</code> banned in more places</td><td>New modules belong in <code>Android.bp</code>. Product configuration stays in Make.</td></tr>
+                <tr><td>2020 – 2023</td><td>Experimental migration to Bazel (“bp2build”), then cancelled</td><td>Ignore Bazel for the platform; Soong is here to stay. (The <em>kernel</em> does use Bazel — see Module 09.)</td></tr>
+                <tr><td>Android 14 – 16</td><td>Release configurations (<code>TARGET_RELEASE</code>), aconfig flags, <code>select()</code> in <code>Android.bp</code></td><td><code>lunch</code> now takes product‑<strong>release</strong>‑variant; conditionals move into Soong.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout analogy">
+            <div class="ci">🎭</div>
+            <div><span class="ct">Analogy</span>
+              <p>Think of a restaurant kitchen. <strong>Android.bp</strong> files are recipe cards, <strong>Soong</strong> is the head chef who reads every card and writes the prep list, <strong>Kati</strong> translates the old handwritten recipes into the same list, and <strong>Ninja</strong> is the line cook who works through it as fast as possible — and skips any dish that is already plated.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="toolchain" data-title="The toolchain at a glance">
+          <div class="sec-head"><h2><span class="sec-num">1.2</span>The toolchain at a glance</h2></div>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-blue">soong_ui</h4><p class="small">The program behind <code>m</code>. Validates the environment, runs product configuration, then starts Soong, Kati and Ninja in order. Lives in <code>build/soong/ui</code> and writes the logs under <code>out/</code>.</p></div>
+            <div class="glass card"><h4 class="c-purple">Blueprint</h4><p class="small">The framework under Soong (<code>build/blueprint</code>): the <code>Android.bp</code> parser, the module and mutator engine, and the Ninja writer. Soong is “Blueprint + Android module types”.</p></div>
+            <div class="glass card"><h4 class="c-green">Soong (soong_build)</h4><p class="small">A Go program compiled at the start of the build. Reads every <code>Android.bp</code>, creates variants, resolves dependencies and emits <code>out/soong/build.&lt;product&gt;.ninja</code>.</p></div>
+            <div class="glass card"><h4 class="c-amber">Kati (ckati)</h4><p class="small">A fast GNU Make clone. Evaluates product makefiles, <code>BoardConfig.mk</code> and remaining <code>Android.mk</code> files, and emits Ninja instead of running commands.</p></div>
+            <div class="glass card"><h4 class="c-red">Ninja</h4><p class="small">The executor. Loads the combined manifest, compares timestamps and command lines, and runs only the out-of-date actions in parallel.</p></div>
+            <div class="glass card"><h4>Prebuilt toolchains</h4><p class="small">Go (<code>prebuilts/go</code>), Clang (<code>prebuilts/clang/host</code>), JDK (<code>prebuilts/jdk</code>), build tools (<code>prebuilts/build-tools</code>). The build uses these, not the host's compilers.</p></div>
+          </div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Tool</th><th>Reads</th><th>Writes</th></tr></thead>
+              <tbody>
+                <tr><td><code>soong_ui</code></td><td>Environment, <code>lunch</code> variables</td><td><code>out/soong.log</code>, <code>out/verbose.log.gz</code>, <code>out/error.log</code></td></tr>
+                <tr><td>Product config (Kati)</td><td><code>AndroidProducts.mk</code>, product <code>*.mk</code>, <code>BoardConfig.mk</code></td><td><code>out/soong/soong.&lt;product&gt;.variables</code> (JSON for Soong)</td></tr>
+                <tr><td><code>soong_build</code></td><td>All <code>Android.bp</code> + the variables file</td><td><code>out/soong/build.&lt;product&gt;.ninja</code>, <code>Android-&lt;product&gt;.mk</code></td></tr>
+                <tr><td>Kati build</td><td><code>Android.mk</code> files + Soong's generated <code>.mk</code></td><td><code>out/build-&lt;product&gt;.ninja</code></td></tr>
+                <tr><td>Kati packaging</td><td>Install lists, image rules</td><td><code>out/build-&lt;product&gt;-package.ninja</code></td></tr>
+                <tr><td>Ninja</td><td><code>out/combined-&lt;product&gt;.ninja</code></td><td>Everything in <code>out/target</code> and <code>out/host</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="pipeline" data-title="What happens when you type m">
+          <div class="sec-head"><h2><span class="sec-num">1.3</span>What happens when you type <code>m</code></h2></div>
+          <p>Click each stage. The pipeline runs top to bottom; Soong and the Kati build step depend on product configuration, and Ninja waits for all manifests to be combined.</p>
+          <div class="pick" id="pl-pick">
+            <div class="glass pipeline">
+              <div class="pl-label">1 · Entry</div>
+              <div class="pl-row">
+                <button class="pl-stage" data-k="m" style="--c:var(--blue)"><b>m / mm / mmm</b><small>envsetup.sh → soong_ui</small></button>
+                <span class="pl-arrow">→</span>
+                <button class="pl-stage" data-k="ui" style="--c:var(--blue)"><b>soong_ui</b><small>env checks · logs</small></button>
+                <span class="pl-arrow">→</span>
+                <button class="pl-stage" data-k="config" style="--c:var(--amber)"><b>Product config</b><small>Kati dumpvars</small></button>
+              </div>
+              <div class="pl-label">2 · Generate Ninja</div>
+              <div class="pl-row">
+                <button class="pl-stage" data-k="bootstrap" style="--c:var(--purple)"><b>Bootstrap</b><small>build soong_build (Go)</small></button>
+                <span class="pl-arrow">→</span>
+                <button class="pl-stage" data-k="soong" style="--c:var(--green)"><b>soong_build</b><small>Android.bp → ninja</small></button>
+                <span class="pl-arrow">→</span>
+                <button class="pl-stage" data-k="kati" style="--c:var(--amber)"><b>Kati build + package</b><small>Android.mk → ninja</small></button>
+              </div>
+              <div class="pl-label">3 · Execute</div>
+              <div class="pl-row">
+                <button class="pl-stage" data-k="combine" style="--c:var(--red)"><b>Combine</b><small>combined-&lt;product&gt;.ninja</small></button>
+                <span class="pl-arrow">→</span>
+                <button class="pl-stage" data-k="ninja" style="--c:var(--red)"><b>Ninja</b><small>compile · link · package</small></button>
+                <span class="pl-arrow">→</span>
+                <button class="pl-stage" data-k="images" style="--c:var(--green)"><b>Images</b><small>out/target/product/…</small></button>
+              </div>
+              <div class="pl-files"><span>Android.bp</span><span>Android.mk</span><span>*.mk product</span><span>BoardConfig.mk</span><span>*.ninja</span><span>*.img</span></div>
+            </div>
+            <div class="info-panel glass" aria-live="polite"></div>
+          </div>
+          <div class="callout tip">
+            <div class="ci">💡</div>
+            <div><span class="ct">Tip</span>
+              <p>If <em>nothing</em> changed in any <code>Android.bp</code> or makefile, the generate stage is skipped — soong_ui checks file globs and timestamps — and the build goes straight to Ninja. That is why a no-op incremental build takes seconds while the first build after a <code>repo sync</code> takes minutes before compiling anything.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="graph" data-title="Modules, variants and the build graph">
+          <div class="sec-head"><h2><span class="sec-num">1.4</span>Modules, variants and the build graph</h2></div>
+          <p>A <strong>module</strong> is one block in an <code>Android.bp</code> — a library, binary, app or file. Soong runs <strong>mutators</strong> over all modules; some split a module into <strong>variants</strong>, one per configuration it must be built for. Dependencies are then resolved variant-to-variant: a 64-bit vendor binary links against the 64-bit <em>vendor</em> variant of a library, never the system one.</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/libgreet/Android.bp">
+cc_library {
+    name: "libgreet",
+    srcs: ["greet.cpp"],
+    host_supported: true,      // also build for the build machine
+    vendor_available: true,    // also build a /vendor variant
+}
+          </script>
+          <p>That one module becomes several variants. Each gets its own directory in <code>out/soong/.intermediates/</code>:</p>
+          <div class="tree glass"><span class="d">out/soong/.intermediates/vendor/acme/libgreet/libgreet/</span>
+├── <span class="d">android_arm64_armv8-a_shared/</span>          <span class="c"># system, 64-bit, .so</span>
+├── <span class="d">android_arm64_armv8-a_static/</span>          <span class="c"># system, 64-bit, .a</span>
+├── <span class="d">android_arm_armv8-a_shared/</span>            <span class="c"># system, 32-bit (if the product is multilib)</span>
+├── <span class="d">android_vendor_arm64_armv8-a_shared/</span>   <span class="c"># /vendor variant (vendor_available)</span>
+└── <span class="d">linux_glibc_x86_64_shared/</span>             <span class="c"># host variant (host_supported)</span></div>
+          <div class="grid grid-3">
+            <div class="glass card"><h4 class="c-blue">os × arch</h4><p class="small"><code>android</code>, <code>linux_glibc</code>, <code>linux_bionic</code>, <code>windows</code> × <code>arm64</code>, <code>arm</code>, <code>x86_64</code>, <code>x86</code>, <code>riscv64</code>.</p></div>
+            <div class="glass card"><h4 class="c-green">image</h4><p class="small"><code>core</code> (system), <code>vendor</code>, <code>product</code>, <code>recovery</code>, <code>ramdisk</code>, <code>vendor_ramdisk</code>.</p></div>
+            <div class="glass card"><h4 class="c-purple">link &amp; apex</h4><p class="small"><code>shared</code> / <code>static</code>, plus <code>apex&lt;min_sdk&gt;</code> variants for code that ships inside an APEX.</p></div>
+          </div>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Note</span>
+              <p>Variants are why you cannot “just add an <code>if</code>” to an <code>Android.bp</code>. Soong must know <em>statically</em> every combination a module can be built in, so variation is expressed through properties such as <code>arch: {}</code>, <code>target: {}</code> and <code>select()</code> (Module 03).</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="outdir" data-title="Anatomy of out/">
+          <div class="sec-head"><h2><span class="sec-num">1.5</span>Anatomy of <code>out/</code></h2></div>
+          <p>Everything the build creates lives under <code>out/</code> (or <code>$OUT_DIR</code>). Knowing the layout turns “where did my file go?” into a one-line <code>ls</code>.</p>
+          <div class="tree glass"><span class="d">out/</span>
+├── <span class="h">error.log</span>  <span class="h">verbose.log.gz</span>  <span class="h">soong.log</span>  <span class="h">build.trace.gz</span>   <span class="c"># start here when a build fails</span>
+├── combined-&lt;product&gt;.ninja                         <span class="c"># what Ninja actually executes</span>
+├── build-&lt;product&gt;.ninja                            <span class="c"># Kati output (Android.mk + product)</span>
+├── <span class="d">soong/</span>
+│   ├── build.&lt;product&gt;.ninja                        <span class="c"># Soong output</span>
+│   ├── soong.&lt;product&gt;.variables                    <span class="c"># product config as JSON</span>
+│   ├── <span class="d">.intermediates/</span>&lt;path&gt;/&lt;module&gt;/&lt;variant&gt;/    <span class="c"># per-variant objects, jars, gen/</span>
+│   └── <span class="d">host/linux-x86/bin/</span>                          <span class="c"># host tools built by Soong</span>
+├── <span class="d">host/linux-x86/</span>                                  <span class="c"># host tools: avbtool, lpmake, aapt2, fastboot…</span>
+├── <span class="d">target/product/&lt;device&gt;/</span>                        <span class="c"># $ANDROID_PRODUCT_OUT</span>
+│   ├── <span class="d">system/  vendor/  product/  system_ext/  odm/</span>   <span class="c"># staging dirs = partition contents</span>
+│   ├── boot.img  init_boot.img  vendor_boot.img  super.img  vbmeta.img
+│   ├── module-info.json                             <span class="c"># every module, its path and install files</span>
+│   └── <span class="d">obj/</span>                                         <span class="c"># Make-built intermediates</span>
+└── <span class="d">dist/</span>                                            <span class="c"># only with `m dist`: target-files, img zip, symbols</span></div>
+          <div class="callout warn">
+            <div class="ci">⚠️</div>
+            <div><span class="ct">Warning</span>
+              <p><code>out/</code> for a full AAOS product easily reaches 250–400 GB. Put it on a fast local NVMe disk, never on NFS. Use <code>OUT_DIR=/fast/disk/out</code> if the source tree is elsewhere.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="takeaways" data-title="Key takeaways">
+          <div class="sec-head"><h2><span class="sec-num">1.6</span>Key takeaways</h2></div>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-blue">Generators vs executor</h4><p class="small">Soong and Kati only <em>write</em> Ninja files. Ninja runs every compiler, linker and image tool.</p></div>
+            <div class="glass card"><h4 class="c-green">Android.bp is declarative</h4><p class="small">No loops, no <code>if</code>. Variation comes from variants and configurable properties.</p></div>
+            <div class="glass card"><h4 class="c-amber">Product config is still Make</h4><p class="small"><code>PRODUCT_*</code> and <code>BOARD_*</code> variables are evaluated by Kati and passed to Soong as JSON.</p></div>
+            <div class="glass card"><h4 class="c-purple">out/ tells the story</h4><p class="small">Logs at the top, Soong state in <code>out/soong</code>, partition staging in <code>out/target/product/&lt;device&gt;</code>.</p></div>
+          </div>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+  <script src="assets/js/pages/overview.js?v=__BUILD__"></script>
+</body>
+</html>

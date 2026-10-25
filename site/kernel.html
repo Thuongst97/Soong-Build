@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kernel, GKI & Kleaf — Soong Build Academy</title>
+  <meta name="description" content="Build the Android kernel for a head unit: GKI and vendor modules, kernel manifests, Kleaf Bazel builds, DDK modules, DTB/DTBO, integrating the prebuilt kernel into the device tree and virtio config for a VM guest.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="kernel">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 09</span></nav>
+          <div class="eyebrow">Module 09 · Images &amp; kernel</div>
+          <h1>Kernel, GKI &amp; Kleaf</h1>
+          <p class="lead">The Android platform build does <strong>not</strong> compile the kernel. The kernel has its own source tree and its own Bazel-based build (Kleaf); the device tree then consumes the results as prebuilts. This split is the first of several “separate build, joined at the image” patterns you'll meet in a head unit.</p>
+          <div class="page-meta"><span>⏱ 25 min read</span><span>🎯 Intermediate</span><span>🧰 repo · Bazel (Kleaf)</span></div>
+        </header>
+
+        <section class="doc-section" id="gki" data-title="GKI architecture">
+          <div class="sec-head"><h2><span class="sec-num">9.1</span>GKI architecture</h2></div>
+          <p>The <strong>Generic Kernel Image</strong> is one kernel binary per Android-kernel branch (e.g. <code>android15-6.6</code>), built and signed by Google. Everything SoC- or board-specific is a <strong>loadable module</strong> that may use only the symbols in the stable <strong>KMI</strong> (Kernel Module Interface).</p>
+          <div class="grid grid-3">
+            <div class="glass card"><h4 class="c-blue">GKI kernel</h4><p class="small">Core kernel + generic drivers. Ships in <code>boot.img</code>. Updated by Google's security releases without rebuilding vendor modules.</p></div>
+            <div class="glass card"><h4 class="c-green">GKI modules</h4><p class="small">Google-built modules (e.g. some networking, virtio pieces) on <code>system_dlkm</code> where used.</p></div>
+            <div class="glass card"><h4 class="c-amber">Vendor modules</h4><p class="small">SoC, board and hypervisor drivers. Early ones in <code>vendor_boot</code>'s ramdisk, the rest in <code>vendor_dlkm</code>.</p></div>
+          </div>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Note</span>
+              <p>Automotive programs are often allowed more flexibility than phones (non-GKI kernels, extra symbols). Still, aligning with GKI pays off over a 10-year vehicle life: kernel security fixes then arrive as a drop-in <code>boot.img</code>.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="sync-kernel" data-title="Getting the kernel source">
+          <div class="sec-head"><h2><span class="sec-num">9.2</span>Getting the kernel source</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="sync-kernel.sh">
+mkdir -p ~/hu/kernel && cd ~/hu/kernel
+repo init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6
+repo sync -c -j8 --no-tags
+ls    # build/  common/  common-modules/virtual-device/  prebuilts/  tools/ …
+          </script>
+          <p>Your SoC vendor normally provides a kernel manifest that adds its module sources (and sometimes a patched <code>common</code>). Keep it in your own <code>local_manifests</code>, exactly like the platform tree.</p>
+        </section>
+
+        <section class="doc-section" id="kleaf" data-title="Building with Kleaf">
+          <div class="sec-head"><h2><span class="sec-num">9.3</span>Building with Kleaf</h2></div>
+          <p><strong>Kleaf</strong> wraps the kernel's Kbuild in Bazel rules: hermetic toolchains from <code>prebuilts/</code>, cached results and reproducible output. The legacy <code>build/build.sh</code> flow is gone from recent branches.</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="kleaf.sh">
+# the GKI kernel for arm64
+tools/bazel run //common:kernel_aarch64_dist -- --destdir=out/gki
+
+# AOSP's virtual-device modules (virtio drivers for VM guests) — a good reference for the head unit
+tools/bazel run //common-modules/virtual-device:virtual_device_aarch64_dist -- --destdir=out/vd
+
+ls out/gki   # Image  Image.lz4  System.map  vmlinux  *.ko  boot*.img …
+          </script>
+        </section>
+
+        <section class="doc-section" id="kernel-modules" data-title="Vendor modules">
+          <div class="sec-head"><h2><span class="sec-num">9.4</span>Vendor modules</h2></div>
+          <p>The <strong>Driver Development Kit</strong> (DDK) rules let you build an out-of-tree module against a GKI build without writing a Kbuild Makefile. Example: a driver for the hypervisor's shared-memory device.</p>
+          <script type="text/plain" data-code data-lang="python" data-file="vendor/acme/drivers/ivc/BUILD.bazel">
+load("//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
+
+ddk_module(
+    name = "acme_ivc",
+    srcs = ["acme_ivc.c", "acme_ivc.h"],
+    out = "acme_ivc.ko",
+    kernel_build = "//common:kernel_aarch64",
+    deps = ["//common:all_headers_aarch64"],
+)
+
+kernel_module_group(
+    name = "acme_hu_modules",
+    srcs = [":acme_ivc"],
+)
+          </script>
+        </section>
+
+        <section class="doc-section" id="dtb" data-title="Device tree: DTB & DTBO">
+          <div class="sec-head"><h2><span class="sec-num">9.5</span>Device tree: DTB &amp; DTBO</h2></div>
+          <p>On bare metal, the bootloader passes a DTB describing the board, optionally patched by overlays from <code>dtbo.img</code>. A <strong>VM guest</strong> is different: the hypervisor describes the <em>virtual</em> machine — RAM, vCPUs, virtio-mmio devices, interrupts — and typically generates the guest's device tree from its VM configuration (Module 11).</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="dtb.sh">
+dtc -I dts -O dtb -o hu-guest.dtb hu-guest.dts           # compile a DTB
+mkdtboimg create dtbo.img --page_size=4096 a.dtbo b.dtbo # pack overlays (bare-metal boards)
+dtc -I dtb -O dts /sys/firmware/fdt                      # on target: dump what the kernel got
+          </script>
+        </section>
+
+        <section class="doc-section" id="integrate" data-title="Dropping the kernel into the Android build">
+          <div class="sec-head"><h2><span class="sec-num">9.6</span>Dropping the kernel into the Android build</h2></div>
+          <p>Copy the Kleaf output into a dedicated prebuilt project, then let the device tree pick it up. Version the directory by kernel branch so an upgrade is a one-line change.</p>
+          <div class="tree glass"><span class="d">device/acme/hu-kernel/6.6/</span>
+├── Image                      <span class="c"># → boot.img</span>
+├── System.map  vmlinux        <span class="c"># for debugging only, not installed</span>
+├── <span class="d">vendor_ramdisk/</span>*.ko         <span class="c"># first-stage: virtio_blk, virtio_mmio, acme_ivc …</span>
+├── <span class="d">vendor_dlkm/</span>*.ko            <span class="c"># everything else</span>
+└── modules.load               <span class="c"># load order</span></div>
+          <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/BoardConfig.mk (kernel)">
+KERNEL_DIR := device/acme/hu-kernel/6.6
+
+BOARD_VENDOR_RAMDISK_KERNEL_MODULES := $(wildcard $(KERNEL_DIR)/vendor_ramdisk/*.ko)
+BOARD_VENDOR_RAMDISK_KERNEL_MODULES_LOAD := $(strip $(shell cat $(KERNEL_DIR)/vendor_ramdisk/modules.load))
+BOARD_VENDOR_KERNEL_MODULES := $(wildcard $(KERNEL_DIR)/vendor_dlkm/*.ko)
+BOARD_USES_VENDOR_DLKMIMAGE := true
+          </script>
+          <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/device.mk (kernel)">
+# mkbootimg picks up $(PRODUCT_OUT)/kernel
+PRODUCT_COPY_FILES += device/acme/hu-kernel/6.6/Image:kernel
+          </script>
+        </section>
+
+        <section class="doc-section" id="guest-kernel" data-title="Kernel config for a VM guest">
+          <div class="sec-head"><h2><span class="sec-num">9.7</span>Kernel config for a VM guest</h2></div>
+          <p>A guest sees virtual hardware. Whatever is needed to reach <code>super</code> and the console must be available in first stage — either built in or as modules in <code>vendor_boot</code>.</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Option</th><th>Why the guest needs it</th><th>Stage</th></tr></thead>
+              <tbody>
+                <tr><td><code>CONFIG_VIRTIO_MMIO</code></td><td>Discovers virtio devices described in the guest device tree.</td><td>First stage</td></tr>
+                <tr><td><code>CONFIG_VIRTIO_BLK</code></td><td>Disks: <code>super</code>, <code>userdata</code>, <code>metadata</code>…</td><td>First stage</td></tr>
+                <tr><td><code>CONFIG_VIRTIO_CONSOLE</code></td><td><code>hvc0</code> console via the hypervisor.</td><td>First stage</td></tr>
+                <tr><td><code>CONFIG_VIRTIO_NET</code></td><td>Network to the Linux SE VM / host bridge.</td><td>Second stage</td></tr>
+                <tr><td><code>CONFIG_VSOCKETS</code>, <code>CONFIG_VIRTIO_VSOCKETS</code></td><td>Host↔guest sockets for VHAL, cluster and audio control channels.</td><td>Second stage</td></tr>
+                <tr><td><code>CONFIG_DRM_VIRTIO_GPU</code>, <code>CONFIG_SND_VIRTIO</code>, <code>CONFIG_VIRTIO_INPUT</code></td><td>Display, audio and touch when they are para-virtualised rather than passed through.</td><td>Second stage</td></tr>
+                <tr><td>Hypervisor shmem driver</td><td>High-bandwidth shared memory + doorbells (vendor module, e.g. <code>acme_ivc.ko</code>).</td><td>Depends</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>

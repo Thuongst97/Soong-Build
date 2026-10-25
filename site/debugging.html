@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Debugging & Performance — Soong Build Academy</title>
+  <meta name="description" content="Debug Soong builds: logs, ninja queries, module-info.json, common errors and fixes, build traces, ccache and clean strategies.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="debugging">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 07</span></nav>
+          <div class="eyebrow">Module 07 · Soong in depth</div>
+          <h1>Debugging &amp; Build Performance</h1>
+          <p class="lead">A failing build prints one line in red and thousands in grey. Knowing which log to open, how to ask Ninja <em>why</em>, and which error means what turns hours of guessing into minutes.</p>
+          <div class="page-meta"><span>⏱ 25 min read</span><span>🎯 Intermediate</span><span>🧰 ninja · jq · Perfetto</span></div>
+        </header>
+
+        <section class="doc-section" id="logs" data-title="Where the logs are">
+          <div class="sec-head"><h2><span class="sec-num">7.1</span>Where the logs are</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>File</th><th>Contains</th><th>Open with</th></tr></thead>
+              <tbody>
+                <tr><td><code>out/error.log</code></td><td>The failing action(s) and their output.</td><td><code>less</code> — <strong>read this first</strong></td></tr>
+                <tr><td><code>out/verbose.log.gz</code></td><td>Every command run, with full command lines.</td><td><code>gzip -cd out/verbose.log.gz | less</code></td></tr>
+                <tr><td><code>out/soong.log</code></td><td>soong_ui's own decisions: environment, regeneration, timings.</td><td><code>less</code></td></tr>
+                <tr><td><code>out/build.trace.gz</code></td><td>Timeline of every stage and action.</td><td><a href="https://ui.perfetto.dev" target="_blank" rel="noopener">ui.perfetto.dev</a></td></tr>
+                <tr><td><code>out/.ninja_log</code></td><td>Start/end time of each output — find the slowest steps.</td><td><code>sort -k2 -n</code> on the columns</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="queries" data-title="Querying the graph">
+          <div class="sec-head"><h2><span class="sec-num">7.2</span>Querying the graph</h2></div>
+          <p>The combined Ninja file is the ground truth of the build. Query it with the same prebuilt Ninja the build uses:</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="ninja-queries.sh">
+NINJA=prebuilts/build-tools/linux-x86/bin/ninja
+N="-f out/combined-$TARGET_PRODUCT.ninja"
+F=out/target/product/hu/vendor/bin/hw/acme.vehicle.bridge
+
+$NINJA $N -t query $F          # rule, inputs and outputs of the action that builds F
+$NINJA $N -t commands $F       # every command needed to (re)build F
+$NINJA $N -t inputs $F         # all transitive inputs
+$NINJA $N -t targets rule cc   # outputs produced by a given rule
+
+# why does this keep rebuilding?
+NINJA_ARGS="-d explain" m acme.vehicle.bridge 2>&1 | grep -m20 explain
+          </script>
+          <script type="text/plain" data-code data-lang="bash" data-file="soong-queries.sh">
+m showcommands acme.vehicle.bridge   # print commands as they run
+m json-module-graph                  # out/soong/module-graph.json: every module, variant and dependency
+jq -r '.[] | select(.Name=="acme.vehicle.bridge") | .Variations' out/soong/module-graph.json | head
+          </script>
+        </section>
+
+        <section class="doc-section" id="module-info" data-title="module-info.json & envsetup lookups">
+          <div class="sec-head"><h2><span class="sec-num">7.3</span><code>module-info.json</code> &amp; envsetup lookups</h2></div>
+          <p>Every product build writes <code>$ANDROID_PRODUCT_OUT/module-info.json</code>: for each module its class, source path, installed files and dependencies. The <code>envsetup</code> helpers read it.</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="module-info.sh">
+refreshmod                          # regenerate the index after build-file edits
+pathmod acme.vehicle.bridge         # → vendor/acme/hals/vehicle/bridge
+outmod  acme.vehicle.bridge         # → …/vendor/bin/hw/acme.vehicle.bridge
+jq '.["acme.vehicle.bridge"] | {path, installed, class, dependencies}' \
+   $ANDROID_PRODUCT_OUT/module-info.json
+          </script>
+        </section>
+
+        <section class="doc-section" id="errors" data-title="Common errors and fixes">
+          <div class="sec-head"><h2><span class="sec-num">7.4</span>Common errors and fixes</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Message (abridged)</th><th>Cause</th><th>Fix</th></tr></thead>
+              <tbody>
+                <tr><td><code>depends on undefined module "X"</code></td><td>Typo, missing repo, or <code>X</code> lives in a namespace not in <code>PRODUCT_SOONG_NAMESPACES</code>.</td><td><code>mgrep '"X"'</code>; add the namespace or the project to your local manifest.</td></tr>
+                <tr><td><code>module "X" already defined</code></td><td>Two <code>Android.bp</code> files define the same name in one namespace.</td><td>Rename, or put one tree in its own <code>soong_namespace</code>.</td></tr>
+                <tr><td><code>unrecognized property "foo"</code></td><td>Typo, wrong module type, or property removed in this Android version.</td><td>Check the generated module reference for your branch.</td></tr>
+                <tr><td><code>dependency "libX" … variant "vendor" not found</code></td><td>A vendor module links a system-only library.</td><td>Use an LLNDK/vendor-available lib, or mark yours <code>vendor_available</code>.</td></tr>
+                <tr><td><code>neverallow … violated</code></td><td>Your SEPolicy grants something forbidden platform-wide.</td><td>Redesign the access (Module 13.8); never patch the neverallow.</td></tr>
+                <tr><td><code>Offending entries … artifact path requirements</code></td><td>The product installs files into <code>/system</code> outside what the base product allows.</td><td>Move the module to <code>/product</code> or <code>/vendor</code>.</td></tr>
+                <tr><td><code>… image too large</code> / <code>Out of space</code></td><td>Partition contents exceed <code>BOARD_*_SIZE</code> or the super group size.</td><td>Re-budget sizes in <code>BoardConfig.mk</code> (and the GPT, Module 15).</td></tr>
+                <tr><td><code>missing and no known rule to make it</code></td><td>A file was deleted, or a <code>genrule</code> output is not declared in <code>out:</code>.</td><td>Fix the reference; declare every output.</td></tr>
+                <tr><td>Random <code>Killed</code> / signal 9</td><td>The kernel OOM killer.</td><td>Lower <code>-j</code>, add swap, or add RAM.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="performance" data-title="Making builds faster">
+          <div class="sec-head"><h2><span class="sec-num">7.5</span>Making builds faster</h2></div>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-green">Build less</h4><p class="small"><code>m &lt;module&gt;</code> while iterating, <code>m &lt;partition&gt;image</code> before flashing one partition, full <code>m</code> only before integration.</p></div>
+            <div class="glass card"><h4 class="c-blue">Don't regenerate</h4><p class="small">Touching any <code>Android.bp</code> or makefile re-runs Soong/Kati (minutes). Batch build-file edits; validate them with <code>m nothing</code>.</p></div>
+            <div class="glass card"><h4 class="c-amber">Cache compilation</h4><p class="small"><code>USE_CCACHE=1</code>, <code>CCACHE_EXEC=/usr/bin/ccache</code>, a 50–100 GB cache on NVMe shared between branches of the same release.</p></div>
+            <div class="glass card"><h4 class="c-purple">Distribute</h4><p class="small">Remote build execution (<code>USE_RBE=1</code> with reclient) scales a build across a cluster; it needs a compatible backend service.</p></div>
+          </div>
+          <script type="text/plain" data-code data-lang="bash" data-file="ccache.sh">
+export USE_CCACHE=1 CCACHE_EXEC=/usr/bin/ccache CCACHE_DIR=/nvme/ccache
+ccache -M 100G
+m -j$(nproc)
+ccache -s            # hit rate after a rebuild should be > 90 %
+          </script>
+          <div class="callout tip">
+            <div class="ci">💡</div>
+            <div><span class="ct">Tip</span>
+              <p>Load <code>out/build.trace.gz</code> into Perfetto after a slow CI build. Long single-threaded stretches are usually Soong/Kati regeneration, R8/D8 on big apps, or image generation — each has a different remedy.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="clean" data-title="Clean builds without nuking everything">
+          <div class="sec-head"><h2><span class="sec-num">7.6</span>Clean builds without nuking everything</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>When</th><th>Do</th></tr></thead>
+              <tbody>
+                <tr><td>Changed <code>PRODUCT_*</code>/<code>BOARD_*</code>, or a file should no longer be installed</td><td><code>m installclean</code> — removes staging dirs and images, keeps object files.</td></tr>
+                <tr><td>One module behaves strangely</td><td><code>rm -rf out/soong/.intermediates/&lt;path&gt;/&lt;module&gt;</code>, rebuild it.</td></tr>
+                <tr><td>Switching to a very different branch or Android version</td><td><code>m clobber</code> (or a separate <code>OUT_DIR</code> per branch).</td></tr>
+                <tr><td>Removing files on incremental CI builds</td><td>Add a clean step to the device tree's <code>CleanSpec.mk</code>.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/CleanSpec.mk">
+# Each step runs once per out/ directory, in order.
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/vendor/bin/acme_old_daemon)
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/vendor/etc/init/acme_old_daemon.rc)
+          </script>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>

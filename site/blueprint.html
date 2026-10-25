@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Android.bp Language — Soong Build Academy</title>
+  <meta name="description" content="The Blueprint language used by Android.bp files: syntax, types, variables, defaults, arch and target variants, select() conditionals, visibility, licenses and tooling.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="blueprint">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 03</span></nav>
+          <div class="eyebrow">Module 03 · Foundations</div>
+          <h1>Android.bp &amp; the Blueprint Language</h1>
+          <p class="lead"><code>Android.bp</code> looks like JSON and is deliberately almost as limited: no <code>if</code>, no loops, no functions. That limitation is what lets Soong parse 100,000 modules in seconds and reason about every variant. Learn the handful of constructs it does have.</p>
+          <div class="page-meta"><span>⏱ 30 min read</span><span>🎯 Beginner → Intermediate</span><span>📂 build/blueprint · build/soong</span></div>
+        </header>
+
+        <section class="doc-section" id="syntax" data-title="Syntax basics">
+          <div class="sec-head"><h2><span class="sec-num">3.1</span>Syntax basics</h2></div>
+          <p>A file is a list of <strong>modules</strong>. Each module starts with a <strong>module type</strong>, followed by a block of <code>name: value</code> properties. Every module needs a <code>name</code> that is unique across the tree (or within its namespace, Module 06).</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/hello/Android.bp">
+// Line comments and /* block comments */ are allowed.
+cc_binary {                      // module type
+    name: "acme_hello",          // unique module name
+    srcs: ["hello.cpp"],         // list of strings
+    shared_libs: ["liblog"],
+    cflags: [
+        "-Wall",
+        "-Werror",               // trailing commas are fine
+    ],
+    vendor: true,                // bool
+}
+          </script>
+          <ul>
+            <li>Property names are <code>snake_case</code>; strings use double quotes only.</li>
+            <li>Paths in <code>srcs</code> are relative to the directory of the <code>Android.bp</code>, and accept globs: <code>"src/**/*.cpp"</code>.</li>
+            <li>Soong finds every <code>Android.bp</code> in the tree automatically — there is no <code>include</code>.</li>
+            <li>Referencing another module's output uses <code>":module_name"</code> in a source list (e.g. a <code>filegroup</code> or <code>genrule</code>).</li>
+          </ul>
+        </section>
+
+        <section class="doc-section" id="types" data-title="Types & operators">
+          <div class="sec-head"><h2><span class="sec-num">3.2</span>Types &amp; operators</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Type</th><th>Example</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr><td>Bool</td><td><code>vendor: true</code></td><td><code>true</code> / <code>false</code></td></tr>
+                <tr><td>Integer</td><td><code>min_sdk_version: 34</code></td><td>Some properties take numbers as strings, check the module reference.</td></tr>
+                <tr><td>String</td><td><code>stem: "acme-hello"</code></td><td>Double-quoted.</td></tr>
+                <tr><td>List of strings</td><td><code>srcs: ["a.cpp", "b.cpp"]</code></td><td>The most common type.</td></tr>
+                <tr><td>Map</td><td><code>arch: { arm64: { … } }</code></td><td>Nested property groups.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>The only operator is <code>+</code>: it concatenates strings and lists and merges maps.</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+common_srcs = ["log.cpp", "config.cpp"]
+
+cc_binary {
+    name: "acme_tool",
+    srcs: common_srcs + ["tool_main.cpp"],
+    cflags: ["-DVERSION=\"" + "1.4" + "\""],
+}
+          </script>
+        </section>
+
+        <section class="doc-section" id="variables" data-title="Variables & defaults">
+          <div class="sec-head"><h2><span class="sec-num">3.3</span>Variables &amp; defaults</h2></div>
+          <p><strong>Variables</strong> are assigned at the top level. They are visible for the rest of the file and in <code>Android.bp</code> files of sub-directories. You may append with <code>+=</code> only <em>before</em> the variable is first used; after that it is immutable.</p>
+          <p><strong>Defaults modules</strong> are the reusable building block: a <code>cc_defaults</code>, <code>java_defaults</code> etc. holds common properties, and other modules pull them in with <code>defaults:</code>. Lists are concatenated (defaults first), scalar values set in the module win.</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/Android.bp">
+cc_defaults {
+    name: "acme_cc_defaults",
+    vendor: true,
+    cflags: ["-Wall", "-Werror", "-Wextra"],
+    shared_libs: ["libbase", "liblog"],
+    sanitize: { integer_overflow: true },
+}
+
+cc_binary {
+    name: "acme_powerd",
+    defaults: ["acme_cc_defaults"],
+    srcs: ["powerd.cpp"],
+    shared_libs: ["libutils"],       // final list: libbase, liblog, libutils
+}
+          </script>
+          <div class="callout tip">
+            <div class="ci">💡</div>
+            <div><span class="ct">Tip</span>
+              <p>Create one <code>*_defaults</code> per team or subsystem (compiler warnings, sanitizers, partition) and make every module use it. It is the cheapest way to keep hundreds of vendor modules consistent.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="variants" data-title="Arch, target & multilib">
+          <div class="sec-head"><h2><span class="sec-num">3.4</span>Arch, target &amp; multilib</h2></div>
+          <p>Instead of conditionals, properties can be nested under keys that match a variant. Soong merges the matching block into the module for that variant only.</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+cc_library {
+    name: "libacme_codec",
+    srcs: ["codec.cpp"],
+    arch: {
+        arm64:  { srcs: ["neon/idct_arm64.S"] },
+        x86_64: { srcs: ["sse/idct_x86_64.cpp"] },
+    },
+    multilib: {
+        lib32: { cflags: ["-DACME_32BIT"] },
+    },
+    target: {
+        android: { shared_libs: ["liblog"] },
+        host:    { cflags: ["-DACME_HOST_TOOL"] },
+    },
+    compile_multilib: "64",     // "both" | "first" | "32" | "64" | "prefer32"
+    host_supported: true,
+}
+          </script>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Key</th><th>Matches</th></tr></thead>
+              <tbody>
+                <tr><td><code>arch</code></td><td><code>arm</code>, <code>arm64</code>, <code>x86</code>, <code>x86_64</code>, <code>riscv64</code></td></tr>
+                <tr><td><code>multilib</code></td><td><code>lib32</code>, <code>lib64</code></td></tr>
+                <tr><td><code>target</code></td><td><code>android</code>, <code>host</code>, <code>linux_glibc</code>, <code>darwin</code>, <code>android_arm64</code>, <code>vendor</code>, <code>recovery</code>…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="select" data-title="Conditionals with select()">
+          <div class="sec-head"><h2><span class="sec-num">3.5</span>Conditionals with <code>select()</code></h2></div>
+          <p>Since Android 15, a property can be a <code>select()</code> expression that picks a value from a configuration source. It is the modern replacement for many <code>soong_config_module_type</code> uses (Module 06) and the right tool for head-unit variants such as display layout or VM transport.</p>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="sc" aria-selected="true">Soong config variable</button>
+              <button data-tab="rf">Release flag</button>
+              <button data-tab="ar">arch / os</button>
+              <button data-tab="mk">Setting the variable</button>
+            </div>
+            <div class="tab-panel" data-panel="sc">
+              <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/display/Android.bp">
+cc_binary {
+    name: "acme_displayd",
+    vendor: true,
+    srcs: ["displayd.cpp"],
+    cflags: select(soong_config_variable("acme_hu", "display_layout"), {
+        "dual":   ["-DACME_DUAL_DISPLAY"],
+        "triple": ["-DACME_TRIPLE_DISPLAY"],
+        default:  [],
+    }),
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="rf">
+              <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+android_app {
+    name: "AcmeHome",
+    srcs: ["src/**/*.kt"],
+    static_libs: select(release_flag("RELEASE_ACME_NEW_HOME"), {
+        true:    ["acme-home-v2"],
+        default: ["acme-home-v1"],
+    }),
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="ar">
+              <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+cc_library {
+    name: "libacme_simd",
+    srcs: select(arch(), {
+        "arm64":  ["simd_neon.cpp"],
+        "x86_64": ["simd_avx2.cpp"],
+        default:  ["simd_generic.cpp"],
+    }),
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="mk">
+              <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/device.mk">
+# Soong config variables are set from product makefiles
+$(call soong_config_set,acme_hu,display_layout,triple)
+$(call soong_config_set,acme_hu,vm_transport,vsock)
+              </script>
+            </div>
+          </div>
+          <div class="callout warn">
+            <div class="ci">⚠️</div>
+            <div><span class="ct">Warning</span>
+              <p>Only properties marked <em>configurable</em> in Soong's Go code accept <code>select()</code>. Support grows with every release; if a property does not support it, Soong fails with a clear error and you fall back to <code>soong_config_module_type</code>.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="visibility" data-title="Visibility, licenses & namespaces">
+          <div class="sec-head"><h2><span class="sec-num">3.6</span>Visibility, licenses &amp; namespaces</h2></div>
+          <p><strong>Visibility</strong> controls which directories may depend on a module — essential when several suppliers share one tree. <strong>Licenses</strong> are mandatory metadata: every module needs an applicable license, usually set once per directory with a <code>package</code> block.</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/hals/Android.bp">
+package {
+    default_visibility: ["//vendor/acme:__subpackages__", "//device/acme:__subpackages__"],
+    default_applicable_licenses: ["vendor_acme_license"],
+}
+
+license {
+    name: "vendor_acme_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["legacy_proprietary"],
+    license_text: ["NOTICE"],
+}
+
+cc_library_shared {
+    name: "libacme_canbus",
+    vendor: true,
+    srcs: ["canbus.cpp"],
+    visibility: ["//vendor/acme/hals/vehicle"],   // only the VHAL may link this
+}
+          </script>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Visibility rule</th><th>Meaning</th></tr></thead>
+              <tbody>
+                <tr><td><code>//visibility:public</code></td><td>Anyone.</td></tr>
+                <tr><td><code>//visibility:private</code></td><td>Only this <code>Android.bp</code>.</td></tr>
+                <tr><td><code>//dir:__pkg__</code></td><td>Modules in exactly that directory.</td></tr>
+                <tr><td><code>//dir:__subpackages__</code></td><td>That directory and everything below it.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="explorer" data-title="Annotated Android.bp">
+          <div class="sec-head"><h2><span class="sec-num">3.7</span>Annotated <code>Android.bp</code></h2></div>
+          <p>A realistic vendor module for the head unit: the native daemon that bridges the Android VHAL to the vehicle network through the hypervisor. Click a numbered line or a note.</p>
+          <div id="bp-explorer"></div>
+        </section>
+
+        <section class="doc-section" id="tooling" data-title="Formatting & conversion tools">
+          <div class="sec-head"><h2><span class="sec-num">3.8</span>Formatting &amp; conversion tools</h2></div>
+          <div class="grid grid-3">
+            <div class="glass card"><h4 class="c-blue">bpfmt</h4><p class="small">Canonical formatter; many Gerrit hosts reject unformatted files. <code>bpfmt -w Android.bp</code> · <code>bpfmt -d .</code> to diff.</p></div>
+            <div class="glass card"><h4 class="c-green">androidmk</h4><p class="small">Converts an <code>Android.mk</code> to a best-effort <code>Android.bp</code>: <code>androidmk Android.mk &gt; Android.bp</code>. Review the result by hand.</p></div>
+            <div class="glass card"><h4 class="c-purple">bpmodify</h4><p class="small">Scriptable edits: <code>bpmodify -m libfoo -property shared_libs -a libbar -w Android.bp</code>.</p></div>
+          </div>
+          <script type="text/plain" data-code data-lang="bash" data-file="tools.sh">
+m bpfmt androidmk bpmodify        # build the tools once
+bpfmt -w vendor/acme/**/Android.bp
+m nothing                          # validate every Android.bp without compiling
+          </script>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+  <script src="assets/js/pages/blueprint.js?v=__BUILD__"></script>
+</body>
+</html>

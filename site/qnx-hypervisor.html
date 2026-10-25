@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QNX Hypervisor Host — Soong Build Academy</title>
+  <meta name="description" content="Build the QNX Hypervisor host image for a head unit: QNX SDP and BSP, mkifs buildfiles, qvm guest configuration, virtual devices, pass-through devices and the host build.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="qnx-hypervisor">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 11</span></nav>
+          <div class="eyebrow">Module 11 · Head-unit SoC</div>
+          <h1>QNX Hypervisor Host</h1>
+          <p class="lead">The host is the first OS to run and the last to fail. It is a QNX Neutrino system whose job is small but critical: own the hardware, start one <code>qvm</code> per guest, serve their virtual devices and watch their health. Its image is built with the QNX toolchain — no Soong involved.</p>
+          <div class="page-meta"><span>⏱ 35 min read</span><span>🎯 Advanced</span><span>🧰 QNX SDP · mkifs · qvm</span></div>
+        </header>
+
+        <div class="callout warn">
+          <div class="ci">⚠️</div>
+          <div><span class="ct">Read this first</span>
+            <p>QNX SDP, the Hypervisor and SoC BSPs are licensed products. File names, driver names and <code>qvm</code> option spellings below are <strong>illustrative</strong> and vary by QNX release and BSP. Start from the sample buildfiles and guest configurations shipped with <em>your</em> BSP and use the official QNX documentation as the reference.</p>
+          </div>
+        </div>
+
+        <section class="doc-section" id="concepts" data-title="Hypervisor concepts">
+          <div class="sec-head"><h2><span class="sec-num">11.1</span>Hypervisor concepts</h2></div>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-blue">Microkernel + virtualization</h4><p class="small">The QNX Neutrino microkernel (<code>procnto</code>) runs at the hypervisor exception level. Everything else — drivers, file systems, and each VM — is a normal, restartable process.</p></div>
+            <div class="glass card"><h4 class="c-green">One qvm per guest</h4><p class="small">A <code>qvm</code> process creates one VM from a configuration file: guest RAM, vCPUs (host threads), and the virtual devices it loads as shared objects.</p></div>
+            <div class="glass card"><h4 class="c-amber">vdevs</h4><p class="small">Virtual devices emulated inside qvm: interrupt controller, UART, virtio block/net/console, shared memory, watchdog. They forward I/O to host drivers.</p></div>
+            <div class="glass card"><h4 class="c-purple">Pass-through</h4><p class="small">A physical device mapped directly into one guest (USB, Wi-Fi). Fast, but that guest now owns it; the SMMU confines its DMA.</p></div>
+          </div>
+          <div class="callout analogy">
+            <div class="ci">🎭</div>
+            <div><span class="ct">Analogy</span>
+              <p>Each <code>qvm</code> is a <strong>flight simulator cockpit</strong>: the guest pilot believes it flies a real plane, but every instrument (vdev) is driven by the simulator, and only the few real controls you deliberately wired in (pass-through) touch actual hardware.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="sdp" data-title="Installing QNX SDP">
+          <div class="sec-head"><h2><span class="sec-num">11.2</span>Installing QNX SDP</h2></div>
+          <p>Install with the <strong>QNX Software Center</strong> using your license: the SDP (7.1 or 8.0, as your BSP requires), the Hypervisor add-on and the SoC BSP. Record the exact package versions — they are part of your release (Module 10.6).</p>
+          <script type="text/plain" data-code data-lang="bash" data-file="qnx-env.sh">
+# every shell that builds QNX code
+source ~/qnx800/qnxsdp-env.sh
+echo $QNX_HOST $QNX_TARGET     # host tools, target headers/libraries
+which qcc mkifs dumpifs        # compiler driver and image tools
+          </script>
+          <div class="callout tip">
+            <div class="ci">💡</div>
+            <div><span class="ct">Tip</span>
+              <p>For CI, install the SDP once into a read-only directory or container image and export the package list from the Software Center. A different patch level of <code>libc</code> or a driver is a different product.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="bsp" data-title="The board support package">
+          <div class="sec-head"><h2><span class="sec-num">11.3</span>The board support package</h2></div>
+          <div class="tree glass"><span class="d">qnx/bsp/</span>
+├── Makefile                       <span class="c"># builds everything below</span>
+├── <span class="d">src/hardware/startup/boards/acmesoc/</span>   <span class="c"># startup-acmesoc: early HW init, builds the syspage</span>
+├── <span class="d">src/hardware/devb/</span>  <span class="d">devc/</span>  <span class="d">i2c/</span> …       <span class="c"># storage, serial, bus drivers (some as binaries)</span>
+├── <span class="d">prebuilt/aarch64le/</span>               <span class="c"># vendor binaries: GPU, display, audio DSP drivers</span>
+└── <span class="d">images/</span>                           <span class="c"># sample buildfiles → start here</span>
+    ├── acmesoc.build
+    └── acmesoc-hypervisor.build</div>
+          <script type="text/plain" data-code data-lang="bash" data-file="build-bsp.sh">
+cd ~/hu/qnx/bsp
+make            # compiles startup + open-source drivers, installs into install/
+ls install/aarch64le/boot/sys/   # startup-acmesoc, procnto-smp-instr …
+          </script>
+        </section>
+
+        <section class="doc-section" id="buildfile" data-title="Host buildfile & mkifs">
+          <div class="sec-head"><h2><span class="sec-num">11.4</span>Host buildfile &amp; <code>mkifs</code></h2></div>
+          <p>A QNX bootable image is an <strong>IFS</strong> (image file system) created by <code>mkifs</code> from a <strong>buildfile</strong>. The buildfile has three parts: the boot loader stub (startup + kernel), a startup script, and the list of files to include.</p>
+          <div id="buildfile-explorer"></div>
+        </section>
+
+        <section class="doc-section" id="qvm" data-title="qvm guest configuration">
+          <div class="sec-head"><h2><span class="sec-num">11.5</span><code>qvm</code> guest configuration</h2></div>
+          <p>Each guest is described by a text file passed to <code>qvm</code>. It is the VM's “hardware”: whatever is not listed here, the guest simply does not have.</p>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="android" aria-selected="true">android.qvmconf</button>
+              <button data-tab="cluster">cluster.qvmconf</button>
+              <button data-tab="linux">linux.qvmconf</button>
+            </div>
+            <div class="tab-panel" data-panel="android">
+              <script type="text/plain" data-code data-lang="conf" data-file="qnx/host/qvm/android.qvmconf">
+# Android Automotive guest (illustrative — check option names for your release)
+system android
+ram 0x80000000,12288M
+
+# 8 vCPUs on the big cores
+cpu runmask 4
+cpu runmask 5
+cpu runmask 6
+cpu runmask 7
+cpu runmask 8
+cpu runmask 9
+cpu runmask 10
+cpu runmask 11
+
+# guest bootloader: reads boot/init_boot/vendor_boot from virtio-blk, verifies AVB, picks the A/B slot
+load /guests/android/u-boot.bin
+
+# console → host, as hvc0 in the guest
+vdev virtio-console loc 0x1c0a0000 intr gic:40 hostdev >/dev/android_console
+
+# the whole Android LUN, with its own GPT: boot_a/b, init_boot_a/b, vendor_boot_a/b,
+# vbmeta_a/b, misc, metadata, super, userdata (Module 15.1)
+vdev virtio-blk loc 0x1c0b0000 intr gic:41 hostdev /dev/ufs2
+
+# network link to the Linux SE VM
+vdev virtio-net loc 0x1c0e0000 intr gic:44 peer /dev/qvmpeers/android_linux mac 02:00:00:00:00:0a
+
+# shared memory for navigation frames to the cluster
+vdev shmem loc 0x1c100000 intr gic:46 name nav_frames
+
+# USB host controller passed through (SMMU-protected)
+pass loc mem:0x0a600000,0x100000,rw intr gic:165=gic:165
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="cluster">
+              <script type="text/plain" data-code data-lang="conf" data-file="qnx/host/qvm/cluster.qvmconf">
+# QNX cluster guest (illustrative)
+system cluster
+ram 0x40000000,1024M
+cpu runmask 2 sched 30      # dedicated little cores, high priority
+cpu runmask 3 sched 30
+
+load /guests/cluster/cluster.ifs
+
+vdev virtio-console loc 0x1c0a0000 intr gic:40 hostdev >/dev/cluster_console
+vdev virtio-blk loc 0x1c0b0000 intr gic:41 hostdev /dev/ufs1.cluster_assets
+vdev shmem loc 0x1c100000 intr gic:46 name nav_frames
+vdev shmem loc 0x1c110000 intr gic:47 name vehicle_signals
+vdev wdt-sp805 loc 0x1c0f0000 intr gic:45     # guest watchdog → host health monitor
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="linux">
+              <script type="text/plain" data-code data-lang="conf" data-file="qnx/host/qvm/linux.qvmconf">
+# Linux SE guest (illustrative)
+system linux
+ram 0x80000000,2048M
+cpu runmask 0
+cpu runmask 1
+
+load /guests/linux/Image
+cmdline "console=hvc0 root=/dev/vda rootwait ro security=selinux selinux=1 enforcing=1"
+
+vdev virtio-console loc 0x1c0a0000 intr gic:40 hostdev >/dev/linux_console
+vdev virtio-blk loc 0x1c0b0000 intr gic:41 hostdev /dev/ufs3.linux_rootfs_a
+vdev virtio-blk loc 0x1c0c0000 intr gic:42 hostdev /dev/ufs3.linux_data
+vdev virtio-net loc 0x1c0e0000 intr gic:44 peer /dev/qvmpeers/android_linux mac 02:00:00:00:00:0b
+
+# automotive Ethernet MAC passed through for telematics
+pass loc mem:0x0b000000,0x10000,rw intr gic:170=gic:170
+              </script>
+            </div>
+          </div>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Note</span>
+              <p>Guest-physical addresses (<code>loc</code>) and interrupt numbers are <em>virtual</em>: they only need to be unique inside one VM and consistent with what the guest kernel expects. qvm can generate the guest's device tree from this file, which is why the Android guest needs no hand-written DTB.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="vdevs" data-title="Virtual devices">
+          <div class="sec-head"><h2><span class="sec-num">11.6</span>Virtual devices</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>vdev</th><th>Guest sees</th><th>Backed by</th></tr></thead>
+              <tbody>
+                <tr><td>Interrupt controller &amp; timer</td><td>GIC, architected timer</td><td>Hypervisor (provided automatically or as a vdev)</td></tr>
+                <tr><td><code>virtio-console</code> / UART emulation</td><td><code>hvc0</code> / <code>ttyAMA0</code></td><td>A host device node or log</td></tr>
+                <tr><td><code>virtio-blk</code></td><td><code>/dev/block/vdX</code></td><td>A host block device or partition</td></tr>
+                <tr><td><code>virtio-net</code></td><td><code>eth0</code></td><td>A peer link to another VM, or a host network interface</td></tr>
+                <tr><td><code>shmem</code></td><td>Memory region + doorbell interrupt</td><td>Shared pages mapped into several VMs</td></tr>
+                <tr><td>Watchdog</td><td>A standard watchdog device</td><td>Host health monitor that can restart the VM</td></tr>
+                <tr><td>virtio-vsock, -gpu, -snd, -input</td><td>Sockets, display, audio, touch</td><td>Availability depends on release and SoC vendor stack</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="passthrough" data-title="Pass-through devices">
+          <div class="sec-head"><h2><span class="sec-num">11.7</span>Pass-through devices</h2></div>
+          <p>Pass-through maps a device's MMIO registers into the guest and routes its interrupt. Because the device can DMA, the host must program the <strong>SMMU</strong> (on QNX, through the SMMU manager service) so the device can only reach that guest's RAM.</p>
+          <ul>
+            <li>Remove the device from the host's own startup script — two drivers for one device is a classic bring-up bug.</li>
+            <li>Describe the device to the guest exactly as its driver expects (compatible string, clocks may need a para-virtual workaround).</li>
+            <li>Power and clocks often stay host-owned: the guest driver cannot turn them on by itself.</li>
+          </ul>
+        </section>
+
+        <section class="doc-section" id="build-host" data-title="Building the host image">
+          <div class="sec-head"><h2><span class="sec-num">11.8</span>Building the host image</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="qnx/host/build.sh">
+#!/bin/bash
+set -eo pipefail   # no -u: envsetup.sh / SDK env scripts are not nounset-safe
+source ~/qnx800/qnxsdp-env.sh
+
+make -C ~/hu/qnx/bsp                       # startup + BSP drivers
+make -C ~/hu/qnx/host/src install          # your services: vehicle gateway, health monitor
+
+mkdir -p out
+mkifs -v \
+  -r ~/hu/qnx/host/install \
+  -r ~/hu/qnx/bsp/install \
+  build/hyp_host.build out/hyp_host.ifs
+
+dumpifs out/hyp_host.ifs | head -40        # verify every file landed
+          </script>
+          <p>The result, <code>hyp_host.ifs</code>, is written to the host partition (Module 15) and loaded by the SoC bootloader after the secure-boot chain has verified it.</p>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+  <script src="assets/js/pages/qnx-hypervisor.js?v=__BUILD__"></script>
+</body>
+</html>

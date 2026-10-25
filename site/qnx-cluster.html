@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QNX Cluster Guest — Soong Build Academy</title>
+  <meta name="description" content="Build the QNX instrument-cluster guest: guest buildfile, Screen graphics and display ownership, early telltales and rear-view camera, freedom from interference and the cluster image build.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="qnx-cluster">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 12</span></nav>
+          <div class="eyebrow">Module 12 · Head-unit SoC</div>
+          <h1>QNX Instrument Cluster Guest</h1>
+          <p class="lead">The cluster is the one screen the driver must be able to trust at all times. It runs as its own QNX guest with dedicated cores, boots in about a second and keeps working if Android crashes or reboots. Its build is small — a single IFS — but its requirements shape the whole system.</p>
+          <div class="page-meta"><span>⏱ 20 min read</span><span>🎯 Advanced</span><span>🧰 QNX SDP · Screen · mkifs</span></div>
+        </header>
+
+        <section class="doc-section" id="role" data-title="What the cluster VM owns">
+          <div class="sec-head"><h2><span class="sec-num">12.1</span>What the cluster VM owns</h2></div>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-amber">Safety-relevant content</h4><p class="small">Speed, gear, telltales (brake, airbag, ABS…), warnings and chimes. Usually rated ASIL-B and developed to ISO 26262.</p></div>
+            <div class="glass card"><h4 class="c-blue">Comfort content</h4><p class="small">Trip computer, media now-playing, phone — and the navigation map rendered by Android and shared through memory.</p></div>
+            <div class="glass card"><h4 class="c-green">The cluster panel</h4><p class="small">Its display pipe (and often a head-up display) belongs to this VM alone.</p></div>
+            <div class="glass card"><h4 class="c-red">Independence</h4><p class="small">It never waits for Android. If the map stream stops, the cluster shows its own fallback view.</p></div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="guest-image" data-title="Cluster guest image">
+          <div class="sec-head"><h2><span class="sec-num">12.2</span>Cluster guest image</h2></div>
+          <p>A QNX guest is built exactly like a QNX target image, but with the guest startup from the hypervisor's guest BSP and <strong>virtio</strong> drivers instead of real hardware drivers.</p>
+          <script type="text/plain" data-code data-lang="conf" data-file="qnx/cluster/build/cluster.build">
+# QNX cluster guest (illustrative — driver and startup names depend on your release)
+[image=0x40080000]
+[virtual=aarch64le,raw +compress] .bootstrap = {
+    startup-qvmguest -v
+    PATH=/proc/boot LD_LIBRARY_PATH=/proc/boot procnto-smp-instr -v
+}
+
+[+script] .script = {
+    procmgr_symlink ../../proc/boot/ldqnx-64.so.2 /usr/lib/ldqnx-64.so.2
+    slogger2 &
+    devc-virtio &                       # hvc console from the host
+    reopen /dev/ser1
+
+    acme-signals -s vehicle_signals &   # shmem: speed, gear, telltales from the host gateway
+    screen -c /etc/screen/graphics.conf &
+    waitfor /dev/screen 3
+
+    acme-telltales &                    # tiny renderer: first frame < 1 s after guest start
+    devb-virtio blk name=hd &           # assets partition (fonts, 3D models)
+    waitfor /dev/hd0 5
+    mount -t qnx6 -o ro /dev/hd0 /assets
+    acme-cluster-hmi --assets /assets & # full HMI takes over from acme-telltales
+    acme-nav-receiver -s nav_frames &   # map frames from Android
+}
+
+[perms=0444] /etc/screen/graphics.conf = screen/graphics.conf
+libc.so
+libm.so
+libscreen.so
+screen
+acme-signals
+acme-telltales
+acme-cluster-hmi
+acme-nav-receiver
+          </script>
+        </section>
+
+        <section class="doc-section" id="graphics" data-title="Screen & display ownership">
+          <div class="sec-head"><h2><span class="sec-num">12.3</span>Screen &amp; display ownership</h2></div>
+          <p><strong>Screen</strong> is QNX's compositing windowing system. The cluster HMI (built with a tool such as Kanzi, Qt or a vendor HMI engine) renders into Screen windows; Screen composes them onto the cluster display, including a window fed by Android's navigation frames.</p>
+          <div class="flow"><span>Android nav app</span><i>→ shmem →</i><span>acme-nav-receiver (Screen stream)</span><i>→</i><span>Screen compositor</span><i>→</i><span>cluster panel</span></div>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Note</span>
+              <p>How the GPU is shared between VMs is SoC-specific: some vendors give each VM a hardware GPU context, others render guest content through the host. Either way the cluster's GPU work must be prioritised — configure it in the vendor graphics stack, not in Soong.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="early" data-title="Early features: telltales & RVC">
+          <div class="sec-head"><h2><span class="sec-num">12.4</span>Early features: telltales &amp; RVC</h2></div>
+          <p>Two features must work long before Android is up:</p>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-amber">Telltales</h4><p class="small">A minimal renderer draws regulated indicators from the first vehicle signal. The full 3D HMI fades in later; the telltale layer stays authoritative.</p></div>
+            <div class="glass card"><h4 class="c-blue">Early rear-view camera</h4><p class="small">The host or cluster captures the camera and shows it on the center display when reverse is selected. Once Android's EVS service is ready it can take over, with a handshake so the picture never blinks.</p></div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="safety" data-title="Freedom from interference">
+          <div class="sec-head"><h2><span class="sec-num">12.5</span>Freedom from interference</h2></div>
+          <p>ISO 26262 requires that lower-integrity software (Android, QM) cannot disturb the cluster. The hypervisor provides the mechanisms; your configuration must actually use them:</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Interference</th><th>Mechanism</th><th>Where configured</th></tr></thead>
+              <tbody>
+                <tr><td>Spatial (memory)</td><td>Separate guest RAM, SMMU for DMA, read-only shared memory towards the cluster</td><td><code>cluster.qvmconf</code>, host SMMU setup</td></tr>
+                <tr><td>Temporal (CPU)</td><td>Pinned cores, priorities, scheduling budgets</td><td><code>cpu</code> lines in qvm configs</td></tr>
+                <tr><td>Communication</td><td>End-to-end protection (counter, CRC) on vehicle signals; timeouts</td><td><code>acme-signals</code> and the host gateway</td></tr>
+                <tr><td>Liveness</td><td>Watchdog vdev monitored by the host health monitor</td><td>qvm config + host services</td></tr>
+                <tr><td>Display content</td><td>Display controller CRC check of the telltale region</td><td>Vendor display driver on the host</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="build-cluster" data-title="Building the cluster image">
+          <div class="sec-head"><h2><span class="sec-num">12.6</span>Building the cluster image</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="qnx/cluster/build.sh">
+#!/bin/bash
+set -eo pipefail   # no -u: envsetup.sh / SDK env scripts are not nounset-safe
+source ~/qnx800/qnxsdp-env.sh
+
+make -C src install                         # signals, telltales, HMI, nav receiver
+mkifs -v -r install build/cluster.build out/cluster.ifs
+
+# read-only assets partition (fonts, meshes, textures)
+mkqnx6fsimg build/assets.build out/cluster_assets.img
+          </script>
+          <p><code>cluster.ifs</code> is embedded in the host image or stored in its own partition; <code>cluster_assets.img</code> goes to a partition exported to the cluster as a virtio disk.</p>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>

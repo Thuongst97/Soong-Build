@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Module Types Cookbook — Soong Build Academy</title>
+  <meta name="description" content="Copy-ready Android.bp recipes: cc_binary, cc_library, java_library, android_app, prebuilts, genrule, filegroup, aidl_interface, sysprop_library, rust, python, sh_binary, apex, and partition placement.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="modules">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 04</span></nav>
+          <div class="eyebrow">Module 04 · Soong in depth</div>
+          <h1>Module Types Cookbook</h1>
+          <p class="lead">Soong has hundreds of module types, but a head-unit vendor tree uses perhaps twenty. Here they are as copy-ready recipes, grouped by what you are building — and with the one question that matters most for an image: <em>which partition does it land on?</em></p>
+          <div class="page-meta"><span>⏱ 30 min read</span><span>🎯 Intermediate</span><span>📖 Full list: generated soong_build reference</span></div>
+        </header>
+
+        <section class="doc-section" id="native" data-title="Native C/C++ modules">
+          <div class="sec-head"><h2><span class="sec-num">4.1</span>Native C/C++ modules</h2></div>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="bin" aria-selected="true">cc_binary</button>
+              <button data-tab="lib">cc_library</button>
+              <button data-tab="hdr">headers</button>
+              <button data-tab="test">cc_test</button>
+            </div>
+            <div class="tab-panel" data-panel="bin">
+              <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+cc_binary {
+    name: "acme_diagd",
+    vendor: true,
+    srcs: ["diagd.cpp"],
+    shared_libs: ["libbase", "liblog"],
+    init_rc: ["acme_diagd.rc"],      // start it from init
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="lib">
+              <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+// builds both libacme_util.so and libacme_util.a; consumers choose
+cc_library {
+    name: "libacme_util",
+    vendor_available: true,          // system + vendor variants
+    srcs: ["util.cpp"],
+    export_include_dirs: ["include"], // dependents get this -I automatically
+    shared_libs: ["liblog"],
+}
+
+// only one flavour
+cc_library_shared { name: "libacme_ui",  srcs: ["ui.cpp"], vendor: true }
+cc_library_static { name: "libacme_crc", srcs: ["crc.c"],  vendor: true }
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="hdr">
+              <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+cc_library_headers {
+    name: "acme_vehicle_headers",
+    vendor_available: true,
+    export_include_dirs: ["include"],
+}
+
+cc_binary {
+    name: "acme_tool",
+    header_libs: ["acme_vehicle_headers"],
+    srcs: ["tool.cpp"],
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="test">
+              <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+cc_test {
+    name: "libacme_util_test",
+    srcs: ["util_test.cpp"],          // gtest is linked by default
+    static_libs: ["libacme_util"],
+    test_suites: ["general-tests"],
+}
+// run on a device: atest libacme_util_test
+              </script>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="java" data-title="Java, Kotlin & apps">
+          <div class="sec-head"><h2><span class="sec-num">4.2</span>Java, Kotlin &amp; apps</h2></div>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="app" aria-selected="true">android_app</button>
+              <button data-tab="lib">java / android_library</button>
+              <button data-tab="rro">runtime_resource_overlay</button>
+            </div>
+            <div class="tab-panel" data-panel="app">
+              <script type="text/plain" data-code data-lang="bp" data-file="packages/apps/AcmeHvac/Android.bp">
+android_app {
+    name: "AcmeHvac",
+    srcs: ["src/**/*.kt"],
+    resource_dirs: ["res"],
+    manifest: "AndroidManifest.xml",
+    platform_apis: true,             // may use hidden platform APIs
+    certificate: "platform",         // signed with the platform key
+    privileged: true,                // installs to priv-app/
+    product_specific: true,          // /product/priv-app/AcmeHvac
+    static_libs: ["androidx.car.app_app", "kotlinx_coroutines_android"],
+    libs: ["android.car"],           // compile against the Car API
+    required: ["privapp_allowlist_com.acme.hvac.xml"],
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="lib">
+              <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+java_library {                       // plain Java/Kotlin, no resources
+    name: "acme-vehicle-common",
+    srcs: ["src/**/*.java"],
+    sdk_version: "system_current",
+}
+
+android_library {                    // with Android resources (an AAR-like library)
+    name: "acme-ui-components",
+    srcs: ["src/**/*.kt"],
+    resource_dirs: ["res"],
+    manifest: "AndroidManifest.xml",
+    sdk_version: "current",
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="rro">
+              <script type="text/plain" data-code data-lang="bp" data-file="device/acme/hu/overlays/CarServiceConfig/Android.bp">
+runtime_resource_overlay {
+    name: "AcmeCarServiceConfigRRO",
+    resource_dirs: ["res"],          // values/config.xml overriding CarService config
+    manifest: "AndroidManifest.xml",
+    vendor: true,                    // RROs on /vendor/overlay
+}
+              </script>
+            </div>
+          </div>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Note</span>
+              <p><code>sdk_version</code> decides which API surface the code compiles against: <code>current</code> (public SDK), <code>system_current</code> (system APIs), or unset + <code>platform_apis: true</code> (everything). Prefer the narrowest one — it keeps apps buildable after platform upgrades.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="prebuilts" data-title="Prebuilts">
+          <div class="sec-head"><h2><span class="sec-num">4.3</span>Prebuilts</h2></div>
+          <p>SoC vendors and Tier-1 suppliers deliver binaries. Wrap them in prebuilt modules so they behave like any other module: dependency checks, partition placement, stripping and AVB all work.</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/prebuilts/Android.bp">
+cc_prebuilt_library_shared {
+    name: "libsoc_gpu_drv",
+    vendor: true,
+    srcs: ["arm64/libsoc_gpu_drv.so"],
+    compile_multilib: "64",
+    check_elf_files: false,           // vendor blob with unknown deps
+}
+
+prebuilt_etc {
+    name: "acme_audio_policy.xml",
+    src: "audio/audio_policy_configuration.xml",
+    vendor: true,
+    filename_from_src: true,
+}
+
+prebuilt_firmware {
+    name: "acme_dsp_fw",
+    src: "firmware/dsp.bin",
+    vendor: true,                     // → /vendor/firmware/dsp.bin
+}
+
+android_app_import {
+    name: "SupplierNavigation",
+    apk: "apps/SupplierNavigation.apk",
+    presigned: true,                  // keep the supplier's signature
+    product_specific: true,
+}
+          </script>
+        </section>
+
+        <section class="doc-section" id="generators" data-title="Generated sources & file groups">
+          <div class="sec-head"><h2><span class="sec-num">4.4</span>Generated sources &amp; file groups</h2></div>
+          <p><code>genrule</code> runs a command in a sandbox. It may only read declared inputs and write declared outputs — the price of correct incremental builds.</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/signals/Android.bp">
+filegroup {
+    name: "acme_can_dbc",
+    srcs: ["dbc/*.dbc"],
+}
+
+python_binary_host {
+    name: "dbc2cpp",
+    main: "dbc2cpp.py",
+    srcs: ["dbc2cpp.py"],
+}
+
+genrule {
+    name: "acme_signals_gen",
+    tools: ["dbc2cpp"],
+    srcs: [":acme_can_dbc"],
+    out: ["Signals.h", "Signals.cpp"],
+    cmd: "$(location dbc2cpp) --out $(genDir) $(in)",
+}
+
+cc_library_static {
+    name: "libacme_signals",
+    vendor: true,
+    generated_headers: ["acme_signals_gen"],
+    generated_sources: ["acme_signals_gen"],
+    export_generated_headers: ["acme_signals_gen"],
+}
+          </script>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Placeholder</th><th>Expands to</th></tr></thead>
+              <tbody>
+                <tr><td><code>$(in)</code></td><td>All input files.</td></tr>
+                <tr><td><code>$(out)</code> · <code>$(genDir)</code></td><td>All outputs · the output directory.</td></tr>
+                <tr><td><code>$(location tool)</code></td><td>Path of a tool or input module.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="interfaces" data-title="Interfaces: AIDL, sysprop">
+          <div class="sec-head"><h2><span class="sec-num">4.5</span>Interfaces: AIDL &amp; sysprop</h2></div>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/interfaces/cluster/Android.bp">
+aidl_interface {
+    name: "vendor.acme.cluster",
+    vendor_available: true,
+    srcs: ["vendor/acme/cluster/*.aidl"],
+    stability: "vintf",               // usable across the system/vendor boundary
+    backend: {
+        java: { sdk_version: "module_current" },
+        ndk:  { enabled: true },
+        cpp:  { enabled: false },
+    },
+    versions_with_info: [
+        { version: "1", imports: [] },
+    ],
+    frozen: true,
+}
+// generates vendor.acme.cluster-V1-java, -V1-ndk, … libraries
+// m vendor.acme.cluster-update-api   → snapshot a new version
+// m vendor.acme.cluster-freeze-api   → freeze it
+          </script>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/sysprop/Android.bp">
+sysprop_library {
+    name: "AcmeHuProperties",
+    srcs: ["AcmeHu.sysprop"],         // ro.vendor.acme.* typed accessors
+    property_owner: "Vendor",
+    vendor: true,
+}
+          </script>
+        </section>
+
+        <section class="doc-section" id="other-langs" data-title="Rust, Python & shell">
+          <div class="sec-head"><h2><span class="sec-num">4.6</span>Rust, Python &amp; shell</h2></div>
+          <script type="text/plain" data-code data-lang="bp" data-file="Android.bp">
+rust_binary {
+    name: "acme_ota_agent",
+    crate_name: "acme_ota_agent",
+    srcs: ["src/main.rs"],
+    rustlibs: ["liblog_rust", "libanyhow"],
+    vendor: true,
+}
+
+python_binary_host {
+    name: "acme_pack_tool",           // host tools for your pack step (Module 15)
+    main: "pack.py",
+    srcs: ["pack.py"],
+}
+
+sh_binary {
+    name: "acme_collect_logs",
+    src: "collect_logs.sh",
+    vendor: true,
+}
+          </script>
+        </section>
+
+        <section class="doc-section" id="apex" data-title="APEX modules">
+          <div class="sec-head"><h2><span class="sec-num">4.7</span>APEX modules</h2></div>
+          <p>An <strong>APEX</strong> packages native code, Java and config into one signed, updatable file mounted at <code>/apex/&lt;name&gt;</code>. On a head unit it is useful for vendor components you want to update independently of a full OTA.</p>
+          <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/apex/Android.bp">
+apex {
+    name: "com.acme.vehicle",
+    manifest: "apex_manifest.json",
+    key: "com.acme.vehicle.key",
+    certificate: ":com.acme.vehicle.certificate",
+    vendor: true,
+    updatable: false,
+    binaries: ["acme.vehicle.bridge"],
+    prebuilts: ["acme_bridge.conf"],
+}
+
+apex_key {
+    name: "com.acme.vehicle.key",
+    public_key: "com.acme.vehicle.avbpubkey",
+    private_key: "com.acme.vehicle.pem",
+}
+          </script>
+        </section>
+
+        <section class="doc-section" id="placement" data-title="Partition placement">
+          <div class="sec-head"><h2><span class="sec-num">4.8</span>Partition placement</h2></div>
+          <p>Treble splits the image into partitions owned by different parties. Where a module installs is decided by one property:</p>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>Property</th><th>Installs to</th><th>Typical owner / content</th></tr></thead>
+              <tbody>
+                <tr><td><em>(none)</em></td><td><code>/system</code></td><td>Google / AOSP framework. Avoid adding vendor code here.</td></tr>
+                <tr><td><code>system_ext_specific: true</code></td><td><code>/system_ext</code></td><td>OEM framework extensions tightly coupled to system.</td></tr>
+                <tr><td><code>product_specific: true</code></td><td><code>/product</code></td><td>OEM apps, overlays, branding — per product line.</td></tr>
+                <tr><td><code>vendor: true</code> (or <code>soc_specific</code>)</td><td><code>/vendor</code></td><td>SoC/board HALs, daemons, firmware, VINTF.</td></tr>
+                <tr><td><code>device_specific: true</code></td><td><code>/odm</code></td><td>Board-variant customization on top of vendor.</td></tr>
+                <tr><td><code>vendor_available: true</code></td><td>both <code>/system</code> and <code>/vendor</code> variants</td><td>Libraries needed on both sides.</td></tr>
+                <tr><td><code>recovery: true</code> · <code>ramdisk: true</code> · <code>vendor_ramdisk: true</code></td><td>recovery · generic ramdisk · vendor ramdisk</td><td>Early-boot tools and first-stage init modules.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout warn">
+            <div class="ci">⚠️</div>
+            <div><span class="ct">Warning</span>
+              <p>A vendor module may not link a system-only library and vice versa — Soong reports “dependency on non-vendor library” at generate time. This boundary is what keeps the vendor image working when <code>system</code> is updated.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="install" data-title="Getting a module onto the image">
+          <div class="sec-head"><h2><span class="sec-num">4.9</span>Getting a module onto the image</h2></div>
+          <p>Defining a module only makes it <em>buildable</em>. It lands in an image when something reaches it from the product's install list:</p>
+          <div class="flow"><span>PRODUCT_PACKAGES</span><i>→</i><span>module</span><i>→</i><span>required: […]</span><i>→</i><span>installed in $OUT/&lt;partition&gt;</span></div>
+          <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/device.mk">
+PRODUCT_PACKAGES += \
+    acme.vehicle.bridge \
+    acme_displayd \
+    AcmeHvac \
+    AcmeCarServiceConfigRRO
+
+# debug-only tools
+PRODUCT_PACKAGES_DEBUG += acme_collect_logs
+          </script>
+          <p class="small muted">Check the result with <code>outmod acme.vehicle.bridge</code> or by listing <code>$ANDROID_PRODUCT_OUT/vendor/bin/hw/</code>.</p>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>

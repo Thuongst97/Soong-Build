@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Android (AAOS) Guest — Soong Build Academy</title>
+  <meta name="description" content="Build Android Automotive as a hypervisor guest with Soong: device tree, product makefile, BoardConfig, fstab, HALs over virtio, a VHAL bridge to the host, displays and audio, SELinux and the image build.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="assets/css/main.css?v=__BUILD__">
+  <script>try{var t=localStorage.getItem("sba-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body data-page="android-guest">
+  <div id="site-header"></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content">
+      <div class="content-inner">
+
+        <header class="page-hero">
+          <nav class="crumbs"><a href="index.html">Home</a><span>/</span><span>Module 13</span></nav>
+          <div class="eyebrow">Module 13 · Head-unit SoC</div>
+          <h1>Android Automotive Guest</h1>
+          <p class="lead">Everything from Modules 01–09 comes together here: a device tree that turns AOSP into an Android Automotive VM. The guest sees virtual disks, a virtual console and a few passed-through devices; vehicle data arrives through a VHAL that talks to the hypervisor host.</p>
+          <div class="page-meta"><span>⏱ 40 min read</span><span>🎯 Advanced</span><span>📂 device/acme/hu · vendor/acme</span></div>
+        </header>
+
+        <section class="doc-section" id="approach" data-title="Android as a VM guest">
+          <div class="sec-head"><h2><span class="sec-num">13.1</span>Android as a VM guest</h2></div>
+          <p>Don't start from an empty directory. Two AOSP devices already solve most guest problems, and your SoC vendor usually ships a guest device tree for its graphics and audio stacks.</p>
+          <div class="grid grid-3">
+            <div class="glass card"><h4 class="c-green">device/google/trout</h4><p class="small">Android Automotive on a hypervisor with virtio devices; VHAL forwards to a host-side server over the network/vsock. The closest public reference to this module.</p></div>
+            <div class="glass card"><h4 class="c-blue">Cuttlefish (auto)</h4><p class="small"><code>aosp_cf_*_auto</code>: a complete virtio-based automotive device. Good source for fstab, init and virtio kernel modules.</p></div>
+            <div class="glass card"><h4 class="c-amber">SoC vendor guest tree</h4><p class="small">Graphics, display, audio and codec HALs for <em>your</em> chip in a VM. Merge it as a separate namespace.</p></div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="device-tree" data-title="Device tree for the guest">
+          <div class="sec-head"><h2><span class="sec-num">13.2</span>Device tree for the guest</h2></div>
+          <div class="tree glass"><span class="d">device/acme/hu/</span>
+├── AndroidProducts.mk  acme_hu.mk  device.mk  BoardConfig.mk  Android.bp
+├── <span class="d">init/</span>
+│   ├── fstab.hu                <span class="c"># first-stage + late mounts over virtio-blk</span>
+│   ├── init.hu.rc              <span class="c"># board init: vsock services, properties</span>
+│   └── ueventd.hu.rc
+├── <span class="d">audio/</span>   car_audio_configuration.xml  audio_policy_configuration.xml
+├── <span class="d">overlays/</span>                   <span class="c"># CarService: occupant zones, displays, UXR</span>
+├── <span class="d">sepolicy/vendor/</span>            <span class="c"># 13.8</span>
+├── manifest.xml  compatibility_matrix.xml
+└── <span class="d">bootloader/</span>                 <span class="c"># guest U-Boot config & env (built outside Soong)</span></div>
+        </section>
+
+        <section class="doc-section" id="product" data-title="Product makefile">
+          <div class="sec-head"><h2><span class="sec-num">13.3</span>Product makefile</h2></div>
+          <p><code>acme_hu.mk</code> is the one from Module 05.3. The guest-specific part lives in <code>device.mk</code>:</p>
+          <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/device.mk (guest additions)">
+PRODUCT_SHIPPING_API_LEVEL := 35
+PRODUCT_USE_DYNAMIC_PARTITIONS := true
+$(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota/android_t_baseline.mk)
+PRODUCT_SOONG_NAMESPACES += device/acme/hu vendor/acme vendor/socvendor/guest
+
+# HALs
+PRODUCT_PACKAGES += \
+    acme.vehicle.bridge \
+    android.hardware.boot-service.default \
+    android.hardware.automotive.audiocontrol-service.acme \
+    update_engine update_verifier
+
+# graphics, display & audio HALs for this SoC in a VM (from the SoC vendor)
+$(call inherit-product, vendor/socvendor/guest/guest-vendor.mk)
+
+PRODUCT_COPY_FILES += \
+    device/acme/hu/init/fstab.hu:$(TARGET_COPY_OUT_VENDOR_RAMDISK)/first_stage_ramdisk/fstab.hu \
+    device/acme/hu/init/fstab.hu:$(TARGET_COPY_OUT_VENDOR)/etc/fstab.hu \
+    device/acme/hu/init/init.hu.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/hw/init.hu.rc \
+    device/acme/hu/audio/car_audio_configuration.xml:$(TARGET_COPY_OUT_VENDOR)/etc/car_audio_configuration.xml \
+    frameworks/native/data/etc/android.hardware.type.automotive.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.type.automotive.xml
+
+PRODUCT_PACKAGES += AcmeCarServiceConfigRRO
+
+$(call soong_config_set,acme_hu,vm_transport,vsock)
+$(call soong_config_set,acme_hu,display_layout,dual)
+          </script>
+        </section>
+
+        <section class="doc-section" id="board" data-title="BoardConfig for a guest">
+          <div class="sec-head"><h2><span class="sec-num">13.4</span><code>BoardConfig.mk</code> for a guest</h2></div>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="board" aria-selected="true">BoardConfig.mk</button>
+              <button data-tab="fstab">fstab.hu</button>
+            </div>
+            <div class="tab-panel" data-panel="board">
+              <script type="text/plain" data-code data-lang="make" data-file="device/acme/hu/BoardConfig.mk">
+# ---- CPU ----
+TARGET_ARCH := arm64
+TARGET_ARCH_VARIANT := armv8-2a
+TARGET_CPU_ABI := arm64-v8a
+TARGET_CPU_VARIANT := generic
+TARGET_BOARD_PLATFORM := acmesoc
+TARGET_NO_BOOTLOADER := true              # guest U-Boot is built outside Android
+
+# ---- Boot images (header v4 + init_boot) ----
+BOARD_BOOT_HEADER_VERSION := 4
+BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOT_HEADER_VERSION)
+BOARD_KERNEL_PAGESIZE := 4096
+BOARD_KERNEL_CMDLINE += console=hvc0 loglevel=4
+BOARD_BOOTCONFIG += androidboot.hardware=hu \
+                    androidboot.boot_devices=1c0b0000.virtio_mmio \
+                    androidboot.console=hvc0
+BOARD_BOOTIMAGE_PARTITION_SIZE := 67108864
+BOARD_INIT_BOOT_IMAGE_PARTITION_SIZE := 8388608
+BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE := 67108864
+
+# ---- Kernel (Module 09.6) ----
+KERNEL_DIR := device/acme/hu-kernel/6.6
+BOARD_VENDOR_RAMDISK_KERNEL_MODULES := $(wildcard $(KERNEL_DIR)/vendor_ramdisk/*.ko)
+BOARD_VENDOR_KERNEL_MODULES := $(wildcard $(KERNEL_DIR)/vendor_dlkm/*.ko)
+BOARD_USES_VENDOR_DLKMIMAGE := true
+TARGET_COPY_OUT_VENDOR_DLKM := vendor_dlkm
+
+# ---- Dynamic partitions (Module 08.3) ----
+BOARD_SUPER_PARTITION_SIZE := 8589934592
+BOARD_SUPER_PARTITION_GROUPS := acme_dynamic_partitions
+BOARD_ACME_DYNAMIC_PARTITIONS_SIZE := 8585740288
+BOARD_ACME_DYNAMIC_PARTITIONS_PARTITION_LIST := system system_ext product vendor vendor_dlkm odm
+TARGET_COPY_OUT_VENDOR := vendor
+TARGET_COPY_OUT_PRODUCT := product
+TARGET_COPY_OUT_SYSTEM_EXT := system_ext
+TARGET_COPY_OUT_ODM := odm
+BOARD_SYSTEMIMAGE_FILE_SYSTEM_TYPE := erofs
+BOARD_SYSTEM_EXTIMAGE_FILE_SYSTEM_TYPE := erofs
+BOARD_PRODUCTIMAGE_FILE_SYSTEM_TYPE := erofs
+BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE := erofs
+BOARD_VENDOR_DLKMIMAGE_FILE_SYSTEM_TYPE := erofs
+BOARD_ODMIMAGE_FILE_SYSTEM_TYPE := erofs
+TARGET_USERIMAGES_USE_F2FS := true
+BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := f2fs
+BOARD_USERDATAIMAGE_PARTITION_SIZE := 34359738368
+BOARD_USES_METADATA_PARTITION := true
+
+# ---- A/B + AVB (Module 08.4–08.5) ----
+AB_OTA_UPDATER := true
+AB_OTA_PARTITIONS := boot init_boot vendor_boot vbmeta vbmeta_system \
+                     system system_ext product vendor vendor_dlkm odm
+BOARD_AVB_ENABLE := true
+BOARD_AVB_KEY_PATH := vendor/acme/security/avb/vbmeta_rsa4096.pem
+BOARD_AVB_ALGORITHM := SHA256_RSA4096
+BOARD_AVB_VBMETA_SYSTEM := system system_ext product
+BOARD_AVB_VBMETA_SYSTEM_KEY_PATH := vendor/acme/security/avb/vbmeta_system_rsa4096.pem
+BOARD_AVB_VBMETA_SYSTEM_ALGORITHM := SHA256_RSA4096
+BOARD_AVB_VBMETA_SYSTEM_ROLLBACK_INDEX_LOCATION := 1
+
+# ---- Treble ----
+BOARD_SEPOLICY_DIRS += device/acme/hu/sepolicy/vendor
+DEVICE_MANIFEST_FILE += device/acme/hu/manifest.xml
+DEVICE_MATRIX_FILE := device/acme/hu/compatibility_matrix.xml
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="fstab">
+              <script type="text/plain" data-code data-lang="conf" data-file="device/acme/hu/init/fstab.hu">
+# <src>                     <mnt>         <type>  <mnt_flags>                       <fs_mgr_flags>
+system                      /system       erofs   ro                                wait,slotselect,avb=vbmeta_system,logical,first_stage_mount
+system_ext                  /system_ext   erofs   ro                                wait,slotselect,avb=vbmeta_system,logical,first_stage_mount
+product                     /product      erofs   ro                                wait,slotselect,avb=vbmeta_system,logical,first_stage_mount
+vendor                      /vendor       erofs   ro                                wait,slotselect,avb=vbmeta,logical,first_stage_mount
+vendor_dlkm                 /vendor_dlkm  erofs   ro                                wait,slotselect,avb=vbmeta,logical,first_stage_mount
+odm                         /odm          erofs   ro                                wait,slotselect,avb=vbmeta,logical,first_stage_mount
+/dev/block/by-name/metadata /metadata     ext4    noatime,nosuid,nodev,discard      wait,check,formattable,first_stage_mount
+/dev/block/by-name/userdata /data         f2fs    noatime,nosuid,nodev,discard      latemount,wait,check,formattable,fileencryption=aes-256-xts:aes-256-cts,metadata_encryption=aes-256-xts,keydirectory=/metadata/vold/metadata_encryption,quota
+/dev/block/by-name/misc     /misc         emmc    defaults                          defaults
+              </script>
+            </div>
+          </div>
+          <div class="callout note">
+            <div class="ci">ℹ️</div>
+            <div><span class="ct">Why <code>androidboot.boot_devices</code> matters</span>
+              <p>First-stage init creates <code>/dev/block/by-name/*</code> links only for the device named here — the virtio-mmio disk the host exports at guest address <code>0x1c0b0000</code>. That disk is a whole UFS LUN carrying its own GPT with every Android partition (Module 15.1).</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="hals" data-title="HALs over virtio">
+          <div class="sec-head"><h2><span class="sec-num">13.5</span>HALs over virtio</h2></div>
+          <div class="table-wrap">
+            <table class="t">
+              <thead><tr><th>HAL</th><th>Guest implementation</th><th>Talks to</th></tr></thead>
+              <tbody>
+                <tr><td>Vehicle (VHAL)</td><td><code>acme.vehicle.bridge</code> (13.6)</td><td>Host vehicle gateway via vsock</td></tr>
+                <tr><td>Graphics allocator / composer</td><td>SoC vendor guest HALs</td><td>Virtualised GPU &amp; display pipes owned by the host</td></tr>
+                <tr><td>Audio + AudioControl</td><td>AIDL audio HAL on virtio-snd or vendor shmem audio; <code>audiocontrol</code> for focus/ducking</td><td>Host-owned DSP and amplifier</td></tr>
+                <tr><td>Boot control</td><td>AOSP default Boot HAL (slot metadata in <code>misc</code>)</td><td>Guest U-Boot reads the same metadata</td></tr>
+                <tr><td>EVS (cameras)</td><td>Vendor EVS HAL</td><td>Camera frames shared by the host; early-RVC handover</td></tr>
+                <tr><td>Wi-Fi / Bluetooth / USB</td><td>Normal vendor HALs</td><td>Pass-through hardware</td></tr>
+                <tr><td>Health / thermal</td><td>Small vendor HALs</td><td>Para-virtual data from the host (no battery on a head unit)</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="vhal" data-title="VHAL bridge to the vehicle">
+          <div class="sec-head"><h2><span class="sec-num">13.6</span>VHAL bridge to the vehicle</h2></div>
+          <p>AOSP's reference VHAL is split in two: <code>DefaultVehicleHal</code> implements the AIDL <code>IVehicle</code> service (subscriptions, permissions, batching), and delegates to an <code>IVehicleHardware</code> implementation. You implement only the hardware side — here, a client that forwards property reads/writes to the host gateway over vsock. (AOSP also contains a gRPC-based <code>IVehicleHardware</code>, used by trout, if your host can run a gRPC server.)</p>
+          <div class="tabs" data-tabs>
+            <div class="tab-list" role="tablist">
+              <button data-tab="cpp" aria-selected="true">VehicleService.cpp</button>
+              <button data-tab="bp">Android.bp</button>
+              <button data-tab="rc">.rc + VINTF</button>
+            </div>
+            <div class="tab-panel" data-panel="cpp">
+              <script type="text/plain" data-code data-lang="cpp" data-file="vendor/acme/hals/vehicle/bridge/VehicleService.cpp">
+#include <android/binder_manager.h>
+#include <android/binder_process.h>
+#include <DefaultVehicleHal.h>
+#include "AcmeVehicleHardware.h"   // implements IVehicleHardware over vsock
+
+using ::android::hardware::automotive::vehicle::DefaultVehicleHal;
+using ::acme::vehicle::AcmeVehicleHardware;
+
+int main() {
+    ABinderProcess_setThreadPoolMaxThreadCount(4);
+    ABinderProcess_startThreadPool();
+
+    // CID 2 = the host; port agreed with the host's acme-vehicle-gateway
+    auto hardware = std::make_unique<AcmeVehicleHardware>(/*cid=*/2, /*port=*/5000);
+    auto vhal = ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hardware));
+
+    const std::string instance = std::string(DefaultVehicleHal::descriptor) + "/default";
+    if (AServiceManager_addService(vhal->asBinder().get(), instance.c_str()) != STATUS_OK) {
+        return 1;
+    }
+    ABinderProcess_joinThreadPool();
+    return 0;
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="bp">
+              <script type="text/plain" data-code data-lang="bp" data-file="vendor/acme/hals/vehicle/bridge/Android.bp">
+cc_binary {
+    name: "acme.vehicle.bridge",
+    vendor: true,
+    relative_install_path: "hw",
+    defaults: ["VehicleHalDefaults"],         // AOSP VHAL defaults: AIDL NDK deps, flags
+    srcs: [
+        "VehicleService.cpp",
+        "AcmeVehicleHardware.cpp",
+        "VsockChannel.cpp",
+    ],
+    static_libs: [
+        "DefaultVehicleHal",
+        "VehicleHalUtils",
+        "libacme_vehicle_proto",
+    ],
+    shared_libs: ["libbinder_ndk"],
+    init_rc: ["acme.vehicle.bridge.rc"],
+    vintf_fragments: ["acme.vehicle.bridge.xml"],
+}
+              </script>
+            </div>
+            <div class="tab-panel" data-panel="rc">
+              <script type="text/plain" data-code data-lang="conf" data-file="acme.vehicle.bridge.rc">
+service vendor.vehicle-hal-default /vendor/bin/hw/acme.vehicle.bridge
+    class early_hal
+    user vehicle_network
+    group system inet
+              </script>
+              <script type="text/plain" data-code data-lang="xml" data-file="acme.vehicle.bridge.xml">
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.automotive.vehicle</name>
+        <version>3</version>
+        <fqname>IVehicle/default</fqname>
+    </hal>
+</manifest>
+              </script>
+            </div>
+          </div>
+          <div class="callout tip">
+            <div class="ci">💡</div>
+            <div><span class="ct">Tip</span>
+              <p>Define the vsock protocol (protobuf schema, property ID mapping, versioning) in one repository shared by the Android bridge and the QNX gateway. Build it with Soong (<code>cc_library_static</code> + protobuf) on the Android side and with <code>qcc</code> on the QNX side.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="display-audio" data-title="Displays & audio routing">
+          <div class="sec-head"><h2><span class="sec-num">13.7</span>Displays &amp; audio routing</h2></div>
+          <div class="grid grid-2">
+            <div class="glass card"><h4 class="c-blue">Displays</h4><p class="small">The composer HAL exposes the display pipes the host assigned to Android (center, passenger). CarService maps them to occupant zones through <code>config_occupant_zones</code> and <code>config_occupant_display_mapping</code> in an RRO. The cluster panel is <em>not</em> an Android display — the map reaches it through shared memory.</p></div>
+            <div class="glass card"><h4 class="c-green">Audio</h4><p class="small"><code>car_audio_configuration.xml</code> maps audio contexts (music, navigation, call, alerts) to output devices. In a VM each device is a virtio-snd stream or vendor shmem channel mixed by the host DSP, where cluster chimes have priority.</p></div>
+          </div>
+          <script type="text/plain" data-code data-lang="xml" data-file="device/acme/hu/audio/car_audio_configuration.xml (excerpt)">
+<carAudioConfiguration version="3">
+  <zones>
+    <zone name="primary zone" isPrimary="true" occupantZoneId="0">
+      <zoneConfigs>
+        <zoneConfig name="primary zone config" isDefault="true">
+          <volumeGroups>
+            <group>
+              <device address="bus0_media_out"><context context="music"/></device>
+            </group>
+            <group>
+              <device address="bus1_navigation_out"><context context="navigation"/></device>
+            </group>
+            <group>
+              <device address="bus2_voice_out"><context context="voice_command"/><context context="call"/></device>
+            </group>
+          </volumeGroups>
+        </zoneConfig>
+      </zoneConfigs>
+    </zone>
+  </zones>
+</carAudioConfiguration>
+          </script>
+        </section>
+
+        <section class="doc-section" id="sepolicy" data-title="SELinux for guest services">
+          <div class="sec-head"><h2><span class="sec-num">13.8</span>SELinux for guest services</h2></div>
+          <p>Every new vendor service needs a label and the minimum permissions. Develop in <code>userdebug</code>, collect denials with <code>adb logcat | grep avc</code>, and turn them into rules — never ship <code>permissive</code>.</p>
+          <div class="grid grid-2">
+            <div>
+              <script type="text/plain" data-code data-lang="conf" data-file="sepolicy/vendor/file_contexts">
+/vendor/bin/hw/acme\.vehicle\.bridge   u:object_r:hal_vehicle_default_exec:s0
+/dev/acme_ivc                          u:object_r:acme_ivc_device:s0
+              </script>
+            </div>
+            <div>
+              <script type="text/plain" data-code data-lang="conf" data-file="sepolicy/vendor/hal_vehicle_default.te">
+# talk to the host gateway over vsock
+allow hal_vehicle_default self:vsock_socket create_socket_perms_no_ioctl;
+
+# shared-memory device for bulk signals
+type acme_ivc_device, dev_type;
+allow hal_vehicle_default acme_ivc_device:chr_file rw_file_perms;
+              </script>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="build-android" data-title="Building the Android images">
+          <div class="sec-head"><h2><span class="sec-num">13.9</span>Building the Android images</h2></div>
+          <script type="text/plain" data-code data-lang="bash" data-file="android/build.sh">
+#!/bin/bash
+set -eo pipefail   # no -u: envsetup.sh / SDK env scripts are not nounset-safe
+cd ~/hu/android
+source build/envsetup.sh
+lunch acme_hu-trunk_staging-userdebug
+
+m dist DIST_DIR=out/dist -j$(nproc)
+
+# what the integration step needs
+ls $ANDROID_PRODUCT_OUT/{boot,init_boot,vendor_boot,vbmeta,vbmeta_system,super}.img
+ls out/dist/acme_hu-target_files-*.zip      # keep for signing & OTA
+
+# the guest bootloader is a separate build (U-Boot with Android boot + AVB support)
+make -C ~/hu/guests/u-boot acme_hu_guest_defconfig
+make -C ~/hu/guests/u-boot CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+          </script>
+          <div class="callout warn">
+            <div class="ci">⚠️</div>
+            <div><span class="ct">Warning</span>
+              <p>Build a <code>user</code> variant and sign with release keys (Module 08.7) before any vehicle test outside the lab. <code>userdebug</code> images give <code>adb root</code> to anyone who can reach the USB port.</p>
+            </div>
+          </div>
+        </section>
+
+        <div id="pager"></div>
+      </div>
+    </main>
+  </div>
+  <div id="site-footer"></div>
+
+  <script src="assets/js/glossary-data.js?v=__BUILD__"></script>
+  <script src="assets/js/core.js?v=__BUILD__"></script>
+</body>
+</html>
